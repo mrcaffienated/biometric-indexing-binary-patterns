@@ -1,0 +1,20 @@
+activate this environment before indexing folder
+D:\PBRVITS\outputs\biomeric indexing binary patterns
+here itself and then goto indexing
+biometrics_env\Scripts\activate
+
+
+cd indexing
+
+
+
+for training
+python generate_features_deep.py
+streamlit run app.py
+
+
+python -m pip install --upgrade pip
+
+pip install numpy opencv-python scikit-learn matplotlib pandas
+
+

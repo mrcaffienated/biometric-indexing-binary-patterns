@@ -1,6 +1,6 @@
 streamlit>=1.32.0
 deepface
-tensorflow
+tensorflow-cpu
 numpy
 pandas
 protobuf

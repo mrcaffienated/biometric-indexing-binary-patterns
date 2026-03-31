@@ -1,6 +1,8 @@
 import streamlit as st
 import os
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib
 from feature_utils import (
     extract_face_embedding,
     extract_iris_embedding,
@@ -139,6 +141,25 @@ st.markdown("""
         border-top: 1px solid rgba(255,255,255,0.06);
         margin: 1.5rem 0;
     }
+
+    /* Binary template grid */
+    .template-grid {
+        display: grid;
+        grid-template-columns: repeat(16, 1fr);
+        gap: 2px;
+        max-width: 100%;
+        margin: 0.5rem 0;
+    }
+    .bit-1 {
+        aspect-ratio: 1;
+        background: #64ffda;
+        border-radius: 3px;
+    }
+    .bit-0 {
+        aspect-ratio: 1;
+        background: rgba(255,255,255,0.06);
+        border-radius: 3px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -206,34 +227,49 @@ tab1, tab2, tab3 = st.tabs(["👤 Enroll", "🧠 Train", "🔍 Test"])
 # ═══════════════════════════════════════════════════════════════════
 with tab1:
     st.markdown("### Enroll New Person")
-    st.markdown("Upload biometric data for **at least 2 of 3** modalities.")
+    st.markdown("Upload or capture biometric data for **at least 2 of 3** modalities.")
 
     person_name = st.text_input("Person Name", placeholder="e.g. John Doe")
 
     st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
 
-    uploads = {}
+    enroll_data = {}  # mod -> list of image bytes
     cols = st.columns(3)
 
     for i, mod in enumerate(MODALITIES):
         with cols[i]:
             st.markdown(f"**{MODALITY_ICONS[mod]} {mod.title()}**")
-            uploads[mod] = st.file_uploader(
-                f"Upload {mod} images",
-                type=["jpg", "png", "jpeg"],
-                accept_multiple_files=True,
-                key=f"enroll_{mod}",
+            input_method = st.radio(
+                "Input", ["📁 Upload", "📷 Camera"],
+                key=f"enroll_method_{mod}",
+                horizontal=True,
             )
 
-    # Count how many modalities have uploads
-    provided = [mod for mod in MODALITIES if uploads[mod]]
+            enroll_data[mod] = []
+
+            if input_method == "📁 Upload":
+                uploaded = st.file_uploader(
+                    f"Upload {mod} images",
+                    type=["jpg", "png", "jpeg"],
+                    accept_multiple_files=True,
+                    key=f"enroll_{mod}",
+                )
+                if uploaded:
+                    enroll_data[mod] = uploaded
+            else:
+                cam_img = st.camera_input(f"Capture {mod}", key=f"enroll_cam_{mod}")
+                if cam_img is not None:
+                    enroll_data[mod] = [cam_img]
+
+    # Count how many modalities have data
+    provided = [mod for mod in MODALITIES if enroll_data[mod]]
 
     if len(provided) > 0:
         st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
         status_html = ""
         for mod in MODALITIES:
-            if uploads[mod]:
-                status_html += f'<span class="badge-ok">✓ {mod.title()} ({len(uploads[mod])} files)</span> '
+            if enroll_data[mod]:
+                status_html += f'<span class="badge-ok">✓ {mod.title()} ({len(enroll_data[mod])} files)</span> '
             else:
                 status_html += f'<span class="badge-missing">✗ {mod.title()}</span> '
         st.markdown(f"**Status:** {status_html}", unsafe_allow_html=True)
@@ -243,14 +279,14 @@ with tab1:
         if not person_name:
             st.warning("Please enter a person name.")
         elif len(provided) < 2:
-            st.warning("Please upload images for **at least 2** modalities.")
+            st.warning("Please provide data for **at least 2** modalities.")
         else:
             saved_count = 0
             for mod in provided:
                 save_dir = os.path.join(BASE_DATASET, person_name, mod)
                 os.makedirs(save_dir, exist_ok=True)
 
-                for idx, img_file in enumerate(uploads[mod]):
+                for idx, img_file in enumerate(enroll_data[mod]):
                     filepath = os.path.join(save_dir, f"{person_name}_{mod}_{idx}.jpg")
                     with open(filepath, "wb") as f:
                         f.write(img_file.read())
@@ -370,17 +406,31 @@ with tab3:
     for i, mod in enumerate(MODALITIES):
         with test_cols[i]:
             st.markdown(f"**{MODALITY_ICONS[mod]} {mod.title()}**")
-            uploaded = st.file_uploader(
-                f"Upload {mod} image",
-                type=["jpg", "png", "jpeg"],
-                key=f"test_{mod}",
+            test_method = st.radio(
+                "Input", ["📁 Upload", "📷 Camera"],
+                key=f"test_method_{mod}",
+                horizontal=True,
             )
-            if uploaded is not None:
-                temp_path = f"temp_probe_{mod}.jpg"
-                with open(temp_path, "wb") as f:
-                    f.write(uploaded.read())
-                probe_paths[mod] = temp_path
-                st.image(temp_path, use_container_width=True)
+
+            if test_method == "📁 Upload":
+                uploaded = st.file_uploader(
+                    f"Upload {mod} image",
+                    type=["jpg", "png", "jpeg"],
+                    key=f"test_{mod}",
+                )
+                if uploaded is not None:
+                    temp_path = f"temp_probe_{mod}.jpg"
+                    with open(temp_path, "wb") as f:
+                        f.write(uploaded.read())
+                    probe_paths[mod] = temp_path
+                    st.image(temp_path, use_container_width=True)
+            else:
+                cam_img = st.camera_input(f"Capture {mod}", key=f"test_cam_{mod}")
+                if cam_img is not None:
+                    temp_path = f"temp_probe_{mod}.jpg"
+                    with open(temp_path, "wb") as f:
+                        f.write(cam_img.getbuffer())
+                    probe_paths[mod] = temp_path
 
     provided_probes = list(probe_paths.keys())
 
@@ -411,6 +461,7 @@ with tab3:
             }
 
             modality_results = {}
+            binary_probes = {}  # store for visualizer
 
             with st.spinner("Analyzing biometric data..."):
                 for mod in provided_probes:
@@ -434,6 +485,7 @@ with tab3:
                     R = np.load(proj_path)
                     embedding = extractors[mod](probe_paths[mod])
                     binary_probe = create_binary_template(embedding, R)
+                    binary_probes[mod] = binary_probe
 
                     best_score = -1.0
                     best_person = "Unknown"
@@ -524,3 +576,44 @@ with tab3:
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+
+            # ════════════════════════════════════════════════════════
+            # BINARY TEMPLATE VISUALIZER
+            # ════════════════════════════════════════════════════════
+            if binary_probes:
+                st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
+                st.markdown("#### 🧬 Binary Template Visualizer")
+                st.caption("Each cell represents one bit of the protected template. "
+                           "Teal = 1, Dark = 0. (8 rows × 16 columns = 128 bits)")
+
+                viz_cols = st.columns(len(binary_probes))
+
+                for i, (mod, tmpl) in enumerate(binary_probes.items()):
+                    with viz_cols[i]:
+                        st.markdown(f"**{MODALITY_ICONS[mod]} {mod.title()}**")
+
+                        # Build HTML grid
+                        grid_html = '<div class="template-grid">'
+                        for bit in tmpl[:128]:
+                            css_class = "bit-1" if bit == 1 else "bit-0"
+                            grid_html += f'<div class="{css_class}"></div>'
+                        grid_html += '</div>'
+                        st.markdown(grid_html, unsafe_allow_html=True)
+
+                        # Stats below grid
+                        ones = int(np.sum(tmpl))
+                        zeros = len(tmpl) - ones
+                        st.caption(f"1s: {ones} | 0s: {zeros} | Entropy: {min(ones,zeros)/len(tmpl)*2:.2f}")
+
+                        # Matplotlib heatmap
+                        matplotlib.use('Agg')
+                        fig, ax = plt.subplots(figsize=(4, 2))
+                        grid_data = tmpl[:128].reshape(8, 16)
+                        ax.imshow(grid_data, cmap='viridis', aspect='auto', interpolation='nearest')
+                        ax.set_xticks([])
+                        ax.set_yticks([])
+                        ax.set_title(f"{mod.title()} Template", fontsize=10, color='#8892b0')
+                        fig.patch.set_facecolor('#1a1a2e')
+                        ax.set_facecolor('#1a1a2e')
+                        st.pyplot(fig)
+                        plt.close(fig)

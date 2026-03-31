@@ -608,8 +608,7 @@ with tab3:
             if binary_probes:
                 st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
                 st.markdown("#### 🧬 Binary Template Visualizer")
-                st.caption("Each cell represents one bit of the protected template. "
-                           "Teal = 1, Dark = 0. (8 rows × 16 columns = 128 bits)")
+                st.caption("128-bit protected binary template shown as 8 rows × 16 columns of 1s and 0s.")
 
                 viz_cols = st.columns(len(binary_probes))
 
@@ -617,28 +616,16 @@ with tab3:
                     with viz_cols[i]:
                         st.markdown(f"**{MODALITY_ICONS[mod]} {mod.title()}**")
 
-                        # Build HTML grid
-                        grid_html = '<div class="template-grid">'
-                        for bit in tmpl[:128]:
-                            css_class = "bit-1" if bit == 1 else "bit-0"
-                            grid_html += f'<div class="{css_class}"></div>'
-                        grid_html += '</div>'
-                        st.markdown(grid_html, unsafe_allow_html=True)
+                        # Build 1s and 0s text grid (8 rows × 16 cols)
+                        bits = tmpl[:128].astype(int)
+                        rows = []
+                        for row in range(8):
+                            row_bits = bits[row * 16 : (row + 1) * 16]
+                            rows.append("  ".join(str(b) for b in row_bits))
+                        binary_text = "\n".join(rows)
+                        st.code(binary_text, language=None)
 
-                        # Stats below grid
+                        # Stats
                         ones = int(np.sum(tmpl))
                         zeros = len(tmpl) - ones
-                        st.caption(f"1s: {ones} | 0s: {zeros} | Entropy: {min(ones,zeros)/len(tmpl)*2:.2f}")
-
-                        # Matplotlib heatmap
-                        matplotlib.use('Agg')
-                        fig, ax = plt.subplots(figsize=(4, 2))
-                        grid_data = tmpl[:128].reshape(8, 16)
-                        ax.imshow(grid_data, cmap='viridis', aspect='auto', interpolation='nearest')
-                        ax.set_xticks([])
-                        ax.set_yticks([])
-                        ax.set_title(f"{mod.title()} Template", fontsize=10, color='#8892b0')
-                        fig.patch.set_facecolor('#1a1a2e')
-                        ax.set_facecolor('#1a1a2e')
-                        st.pyplot(fig)
-                        plt.close(fig)
+                        st.caption(f"1s: {ones}  |  0s: {zeros}  |  Entropy: {min(ones,zeros)/len(tmpl)*2:.2f}")

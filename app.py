@@ -1,263 +1,526 @@
 import streamlit as st
 import os
 import numpy as np
+from feature_utils import (
+    extract_face_embedding,
+    extract_iris_embedding,
+    extract_fingerprint_embedding,
+    create_binary_template,
+    hamming_similarity,
+    get_or_create_projection_matrix,
+)
 
-from deepface import DeepFace
+# ═══════════════════════════════════════════════════════════════════
+# PAGE CONFIG & CUSTOM CSS
+# ═══════════════════════════════════════════════════════════════════
+st.set_page_config(
+    page_title="Multi-Biometric Indexing System",
+    page_icon="🔐",
+    layout="centered",
+)
 
-def set_background(image_file):
-    with open(image_file, "rb") as f:
-        encoded = f.read()
-    import base64
-    encoded = base64.b64encode(encoded).decode()
+st.markdown("""
+<style>
+    /* ── Clean dark theme overrides ── */
+    .stApp {
+        background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 50%, #16213e 100%);
+    }
 
-    page_bg = f"""
-    <style>
-    .stApp {{
-        background-image: url("data:image/jpg;base64,{encoded}");
-        background-size: cover;
-        background-position: center;
-        background-attachment: fixed;
-    }}
-    </style>
-    """
-    st.markdown(page_bg, unsafe_allow_html=True)
+    /* Header */
+    .main-header {
+        text-align: center;
+        padding: 1.5rem 0 0.5rem 0;
+    }
+    .main-header h1 {
+        color: #e0e0e0;
+        font-size: 1.8rem;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+    }
+    .main-header p {
+        color: #8892b0;
+        font-size: 0.95rem;
+        margin-top: -0.5rem;
+    }
+
+    /* Cards */
+    .info-card {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 12px;
+        padding: 1.2rem;
+        margin: 0.5rem 0;
+    }
+
+    /* Status badges */
+    .badge-ok {
+        display: inline-block;
+        background: #1b5e20;
+        color: #a5d6a7;
+        padding: 2px 10px;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: 500;
+    }
+    .badge-missing {
+        display: inline-block;
+        background: #4a1a1a;
+        color: #ef9a9a;
+        padding: 2px 10px;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: 500;
+    }
+    .badge-warn {
+        display: inline-block;
+        background: #4a3800;
+        color: #ffe082;
+        padding: 2px 10px;
+        border-radius: 20px;
+        font-size: 0.8rem;
+        font-weight: 500;
+    }
+
+    /* Score display */
+    .score-box {
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 10px;
+        padding: 1rem;
+        text-align: center;
+        margin: 0.3rem 0;
+    }
+    .score-value {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: #64ffda;
+    }
+    .score-label {
+        font-size: 0.8rem;
+        color: #8892b0;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+
+    /* Result banners */
+    .result-pass {
+        background: linear-gradient(135deg, #1b5e20, #2e7d32);
+        border-radius: 12px;
+        padding: 1.2rem;
+        text-align: center;
+        margin: 1rem 0;
+    }
+    .result-pass h2 { color: #fff; margin: 0; }
+    .result-pass p { color: #c8e6c9; margin: 0.3rem 0 0 0; }
+
+    .result-fail {
+        background: linear-gradient(135deg, #b71c1c, #c62828);
+        border-radius: 12px;
+        padding: 1.2rem;
+        text-align: center;
+        margin: 1rem 0;
+    }
+    .result-fail h2 { color: #fff; margin: 0; }
+    .result-fail p { color: #ffcdd2; margin: 0.3rem 0 0 0; }
+
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        justify-content: center;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
+        padding: 8px 20px;
+    }
+
+    /* Divider */
+    .clean-divider {
+        border: none;
+        border-top: 1px solid rgba(255,255,255,0.06);
+        margin: 1.5rem 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+MODALITIES = ["face", "iris", "fingerprint"]
+MODALITY_ICONS = {"face": "👤", "iris": "👁️", "fingerprint": "🖐️"}
+MATCH_THRESHOLD = 0.65
+BASE_DATASET = "lfw_subset"
+FEATURES_DIR = "test_features"
 
 
-# ===============================
-# CONFIG
-# ===============================
-st.set_page_config(page_title="Biometric System", layout="centered")
-set_background("bg.jpg")
-# ===============================
-# SESSION LOGIN STATE
-# ===============================
+# ═══════════════════════════════════════════════════════════════════
+# SESSION STATE
+# ═══════════════════════════════════════════════════════════════════
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-# ===============================
-# LOGIN PAGE
-# ===============================
+
+# ═══════════════════════════════════════════════════════════════════
+# LOGIN
+# ═══════════════════════════════════════════════════════════════════
 if not st.session_state.logged_in:
+    st.markdown("""
+    <div class="main-header">
+        <h1>🔐 Multi-Biometric Indexing System</h1>
+        <p>Privacy-Preserving Authentication with Frequent Binary Patterns</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    st.title("Privacy-Preserving Multi-Biometric Indexing Based on Frequent Binary Patterns")
+    st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
 
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("#### Admin Login")
+        username = st.text_input("Username", placeholder="Enter username")
+        password = st.text_input("Password", type="password", placeholder="Enter password")
 
-    if st.button("Login"):
-        if username == "admin" and password == "1234":
-            st.session_state.logged_in = True
-            st.success("Login Successful")
-            st.rerun()
-        else:
-            st.error("Invalid Credentials")
-
+        if st.button("Login", use_container_width=True, type="primary"):
+            if username == "admin" and password == "1234":
+                st.session_state.logged_in = True
+                st.rerun()
+            else:
+                st.error("Invalid credentials")
     st.stop()
 
-# ===============================
-# MAIN SYSTEM
-# ===============================
-st.title("Privacy-Preserving Multi-Biometric Indexing Based on Frequent Binary Patterns")
+
+# ═══════════════════════════════════════════════════════════════════
+# MAIN APP (after login)
+# ═══════════════════════════════════════════════════════════════════
+st.markdown("""
+<div class="main-header">
+    <h1>🔐 Multi-Biometric Indexing System</h1>
+    <p>Privacy-Preserving Authentication with Frequent Binary Patterns</p>
+</div>
+""", unsafe_allow_html=True)
+
+if st.sidebar.button("🚪 Logout"):
+    st.session_state.logged_in = False
+    st.rerun()
 
 tab1, tab2, tab3 = st.tabs(["👤 Enroll", "🧠 Train", "🔍 Test"])
 
-# ======================================================
+
+# ═══════════════════════════════════════════════════════════════════
 # TAB 1 — ENROLLMENT
-# ======================================================
+# ═══════════════════════════════════════════════════════════════════
 with tab1:
+    st.markdown("### Enroll New Person")
+    st.markdown("Upload biometric data for **at least 2 of 3** modalities.")
 
-    st.subheader("Enroll New Person")
+    person_name = st.text_input("Person Name", placeholder="e.g. John Doe")
 
-    person_name = st.text_input("Enter Person Name")
-    uploaded_images = st.file_uploader(
-        "Upload 3-5 Images",
-        type=["jpg", "png", "jpeg"],
-        accept_multiple_files=True
-    )
+    st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
 
-    if st.button("Save Enrollment"):
+    uploads = {}
+    cols = st.columns(3)
 
-        if person_name and uploaded_images:
+    for i, mod in enumerate(MODALITIES):
+        with cols[i]:
+            st.markdown(f"**{MODALITY_ICONS[mod]} {mod.title()}**")
+            uploads[mod] = st.file_uploader(
+                f"Upload {mod} images",
+                type=["jpg", "png", "jpeg"],
+                accept_multiple_files=True,
+                key=f"enroll_{mod}",
+            )
 
-            save_path = os.path.join("lfw_subset", person_name)
-            os.makedirs(save_path, exist_ok=True)
+    # Count how many modalities have uploads
+    provided = [mod for mod in MODALITIES if uploads[mod]]
 
-            for idx, img in enumerate(uploaded_images):
-                with open(os.path.join(save_path, f"{person_name}_{idx}.jpg"), "wb") as f:
-                    f.write(img.read())
+    if len(provided) > 0:
+        st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
+        status_html = ""
+        for mod in MODALITIES:
+            if uploads[mod]:
+                status_html += f'<span class="badge-ok">✓ {mod.title()} ({len(uploads[mod])} files)</span> '
+            else:
+                status_html += f'<span class="badge-missing">✗ {mod.title()}</span> '
+        st.markdown(f"**Status:** {status_html}", unsafe_allow_html=True)
 
-            st.success("Enrollment completed successfully!")
+    if st.button("Save Enrollment", use_container_width=True, type="primary"):
 
+        if not person_name:
+            st.warning("Please enter a person name.")
+        elif len(provided) < 2:
+            st.warning("Please upload images for **at least 2** modalities.")
         else:
-            st.warning("Please provide name and images.")
+            saved_count = 0
+            for mod in provided:
+                save_dir = os.path.join(BASE_DATASET, person_name, mod)
+                os.makedirs(save_dir, exist_ok=True)
 
-# ======================================================
+                for idx, img_file in enumerate(uploads[mod]):
+                    filepath = os.path.join(save_dir, f"{person_name}_{mod}_{idx}.jpg")
+                    with open(filepath, "wb") as f:
+                        f.write(img_file.read())
+                    saved_count += 1
+
+            st.success(f"Enrolled **{person_name}** — {saved_count} images saved across {len(provided)} modalities.")
+
+
+# ═══════════════════════════════════════════════════════════════════
 # TAB 2 — TRAINING
-# ======================================================
+# ═══════════════════════════════════════════════════════════════════
 with tab2:
+    st.markdown("### Generate Protected Templates")
+    st.markdown("Creates cancelable binary templates for all enrolled modalities.")
 
-    st.subheader("Generate Protected Templates")
+    if st.button("Start Training", use_container_width=True, type="primary"):
 
-    if st.button("Start Training"):
-
-        st.info("Generating projection matrix and templates...")
-
-        os.makedirs("test_features/Mix_face_grp", exist_ok=True)
-
-        if not os.path.exists("projection_matrix.npy"):
-            R = np.random.randn(128, 128)
-            np.save("projection_matrix.npy", R)
+        if not os.path.exists(BASE_DATASET):
+            st.error("No enrolled data found. Please enroll at least one person first.")
         else:
-            R = np.load("projection_matrix.npy")
+            persons = [
+                p for p in os.listdir(BASE_DATASET)
+                if os.path.isdir(os.path.join(BASE_DATASET, p))
+            ]
 
-        base_dataset = "lfw_subset"
-        output_base = "test_features/Mix_face_grp"
+            if len(persons) == 0:
+                st.error("No enrolled persons found.")
+            else:
+                progress = st.progress(0, text="Initializing...")
+                total_steps = 0
+                completed = 0
 
-        for person in os.listdir(base_dataset):
+                # Count total work
+                for person in persons:
+                    for mod in MODALITIES:
+                        mod_dir = os.path.join(BASE_DATASET, person, mod)
+                        if os.path.isdir(mod_dir):
+                            total_steps += len([
+                                f for f in os.listdir(mod_dir)
+                                if f.lower().endswith(('.jpg', '.png', '.jpeg'))
+                            ])
 
-            person_path = os.path.join(base_dataset, person)
+                if total_steps == 0:
+                    st.warning("No images found in enrolled data.")
+                else:
+                    extractors = {
+                        "face": extract_face_embedding,
+                        "iris": extract_iris_embedding,
+                        "fingerprint": extract_fingerprint_embedding,
+                    }
 
-            if os.path.isdir(person_path):
+                    modality_stats = {mod: 0 for mod in MODALITIES}
 
-                output_person = os.path.join(output_base, person)
-                os.makedirs(output_person, exist_ok=True)
+                    for person in persons:
+                        for mod in MODALITIES:
+                            mod_dir = os.path.join(BASE_DATASET, person, mod)
+                            if not os.path.isdir(mod_dir):
+                                continue
 
-                for file in os.listdir(person_path):
+                            # Get or create projection matrix for this modality
+                            R = get_or_create_projection_matrix(
+                                f"projection_matrix_{mod}.npy"
+                            )
 
-                    img_path = os.path.join(person_path, file)
+                            output_dir = os.path.join(FEATURES_DIR, f"Mix_{mod}_grp", person)
+                            os.makedirs(output_dir, exist_ok=True)
 
-                    try:
-                        embedding = DeepFace.represent(
-                            img_path=img_path,
-                            model_name="Facenet",
-                            enforce_detection=False
-                        )[0]["embedding"]
+                            for filename in os.listdir(mod_dir):
+                                if not filename.lower().endswith(('.jpg', '.png', '.jpeg')):
+                                    continue
 
-                        embedding = np.array(embedding)
+                                img_path = os.path.join(mod_dir, filename)
+                                try:
+                                    embedding = extractors[mod](img_path)
+                                    binary_tmpl = create_binary_template(embedding, R)
 
-                        protected = np.dot(embedding, R)
-                        threshold = np.median(protected)
-                        binary_template = (protected > threshold).astype(int)
+                                    save_name = filename.rsplit('.', 1)[0] + ".npy"
+                                    np.save(os.path.join(output_dir, save_name), binary_tmpl)
+                                    modality_stats[mod] += 1
 
-                        save_name = file.replace(".jpg", ".npy").replace(".png", ".npy")
-                        np.save(os.path.join(output_person, save_name), binary_template)
+                                except Exception as e:
+                                    st.caption(f"⚠️ Skipped {filename}: {e}")
 
-                    except:
+                                completed += 1
+                                progress.progress(
+                                    completed / total_steps,
+                                    text=f"Processing {person} / {mod}..."
+                                )
+
+                    progress.progress(1.0, text="Complete!")
+
+                    # Summary
+                    st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
+                    st.markdown("#### Training Summary")
+                    summary_cols = st.columns(3)
+                    for i, mod in enumerate(MODALITIES):
+                        with summary_cols[i]:
+                            count = modality_stats[mod]
+                            icon = MODALITY_ICONS[mod]
+                            st.metric(f"{icon} {mod.title()}", f"{count} templates")
+
+                    st.success("Training completed successfully!")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TAB 3 — TESTING
+# ═══════════════════════════════════════════════════════════════════
+with tab3:
+    st.markdown("### Biometric Authentication")
+    st.markdown("Provide **at least 2 of 3** biometric samples to authenticate.")
+
+    st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
+
+    probe_paths = {}
+    test_cols = st.columns(3)
+
+    for i, mod in enumerate(MODALITIES):
+        with test_cols[i]:
+            st.markdown(f"**{MODALITY_ICONS[mod]} {mod.title()}**")
+            uploaded = st.file_uploader(
+                f"Upload {mod} image",
+                type=["jpg", "png", "jpeg"],
+                key=f"test_{mod}",
+            )
+            if uploaded is not None:
+                temp_path = f"temp_probe_{mod}.jpg"
+                with open(temp_path, "wb") as f:
+                    f.write(uploaded.read())
+                probe_paths[mod] = temp_path
+                st.image(temp_path, use_container_width=True)
+
+    provided_probes = list(probe_paths.keys())
+
+    if len(provided_probes) > 0:
+        status_html = ""
+        for mod in MODALITIES:
+            if mod in probe_paths:
+                status_html += f'<span class="badge-ok">✓ {mod.title()}</span> '
+            else:
+                status_html += f'<span class="badge-missing">✗ {mod.title()}</span> '
+        st.markdown(f"**Provided:** {status_html}", unsafe_allow_html=True)
+
+    if len(provided_probes) < 2:
+        if len(provided_probes) == 1:
+            st.markdown(
+                '<span class="badge-warn">⚠ Upload at least 1 more modality</span>',
+                unsafe_allow_html=True,
+            )
+    else:
+        if st.button("🔍 Authenticate", use_container_width=True, type="primary"):
+
+            st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
+
+            extractors = {
+                "face": extract_face_embedding,
+                "iris": extract_iris_embedding,
+                "fingerprint": extract_fingerprint_embedding,
+            }
+
+            modality_results = {}
+
+            with st.spinner("Analyzing biometric data..."):
+                for mod in provided_probes:
+                    proj_path = f"projection_matrix_{mod}.npy"
+                    features_base = os.path.join(FEATURES_DIR, f"Mix_{mod}_grp")
+
+                    if not os.path.exists(proj_path):
+                        modality_results[mod] = {
+                            "status": "error",
+                            "message": "No projection matrix. Run training first.",
+                        }
                         continue
 
-        st.success("Training Completed Successfully!")
+                    if not os.path.exists(features_base):
+                        modality_results[mod] = {
+                            "status": "error",
+                            "message": "No templates found. Run training first.",
+                        }
+                        continue
 
-# ======================================================
-# TAB 3 — TESTING
-# ======================================================
-with tab3:
+                    R = np.load(proj_path)
+                    embedding = extractors[mod](probe_paths[mod])
+                    binary_probe = create_binary_template(embedding, R)
 
-    st.subheader("Test Biometric Authentication")
+                    best_score = -1.0
+                    best_person = "Unknown"
 
-    input_option = st.radio(
-        "Choose Input Method",
-        ["Upload Image", "Capture from Camera"]
-    )
+                    for person in os.listdir(features_base):
+                        person_dir = os.path.join(features_base, person)
+                        if not os.path.isdir(person_dir):
+                            continue
+                        for tmpl_file in os.listdir(person_dir):
+                            if not tmpl_file.endswith(".npy"):
+                                continue
+                            db_template = np.load(os.path.join(person_dir, tmpl_file))
+                            score = hamming_similarity(binary_probe, db_template)
+                            if score > best_score:
+                                best_score = score
+                                best_person = person
 
-    image_path = None
+                    matched = best_score > MATCH_THRESHOLD
+                    modality_results[mod] = {
+                        "status": "match" if matched else "no_match",
+                        "score": best_score,
+                        "person": best_person,
+                        "matched": matched,
+                    }
 
-    # -------- Upload Option --------
-    if input_option == "Upload Image":
+            # ── Display per-modality results ──
+            st.markdown("#### Per-Modality Results")
+            result_cols = st.columns(len(provided_probes))
 
-        uploaded_probe = st.file_uploader(
-            "Upload Probe Image",
-            type=["jpg", "png", "jpeg"]
-        )
+            matches_count = 0
+            matched_person = "Unknown"
 
-        if uploaded_probe is not None:
-            image_path = "temp_probe.jpg"
-            with open(image_path, "wb") as f:
-                f.write(uploaded_probe.read())
+            for i, mod in enumerate(provided_probes):
+                res = modality_results[mod]
+                with result_cols[i]:
+                    st.markdown(f"**{MODALITY_ICONS[mod]} {mod.title()}**")
 
-    # -------- Camera Option --------
-    else:
+                    if res["status"] == "error":
+                        st.error(res["message"])
+                    else:
+                        score_pct = round(res["score"] * 100, 1)
+                        color = "#64ffda" if res["matched"] else "#ef9a9a"
+                        st.markdown(f"""
+                        <div class="score-box">
+                            <div class="score-label">{mod.title()} Score</div>
+                            <div class="score-value" style="color:{color}">{score_pct}%</div>
+                            <div style="color:#8892b0;font-size:0.85rem">
+                                Best match: {res["person"]}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-        col_cam1, col_cam2 = st.columns([1, 2])
+                        if res["matched"]:
+                            matches_count += 1
+                            matched_person = res["person"]
 
-        with col_cam1:
-            camera_image = st.camera_input("Capture Image")
+            # ── Final Decision ──
+            st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
+            st.markdown("#### Final Decision")
 
-        if camera_image is not None:
-            image_path = "temp_camera.jpg"
-            with open(image_path, "wb") as f:
-                f.write(camera_image.getbuffer())
+            col_decision, col_stats = st.columns([2, 1])
 
-    # -------- If Image Exists --------
-    if image_path is not None:
+            with col_decision:
+                if matches_count >= 2:
+                    st.markdown(f"""
+                    <div class="result-pass">
+                        <h2>✅ AUTHENTICATED</h2>
+                        <p>Identity: <strong>{matched_person}</strong> — {matches_count}/{len(provided_probes)} modalities matched</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                    <div class="result-fail">
+                        <h2>❌ REJECTED</h2>
+                        <p>Only {matches_count}/{len(provided_probes)} modalities matched (minimum 2 required)</p>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-        st.image(image_path, width=300)
-
-        if not os.path.exists("projection_matrix.npy"):
-            st.error("Projection matrix not found. Please run Training first.")
-        else:
-
-            R = np.load("projection_matrix.npy")
-
-            embedding = DeepFace.represent(
-                img_path=image_path,
-                model_name="Facenet",
-                enforce_detection=False
-            )[0]["embedding"]
-
-            embedding = np.array(embedding)
-
-            protected = np.dot(embedding, R)
-            threshold = np.median(protected)
-            binary_probe = (protected > threshold).astype(int)
-
-            st.subheader("Binary Template Preview")
-            st.code(binary_probe[:32])
-
-            def hamming_similarity(a, b):
-                return np.sum(a == b) / len(a)
-
-            best_score = -1
-            best_person = "Unknown"
-
-            base_path = "test_features/Mix_face_grp"
-
-            for person in os.listdir(base_path):
-
-                person_path = os.path.join(base_path, person)
-
-                if os.path.isdir(person_path):
-
-                    for file in os.listdir(person_path):
-
-                        db_template = np.load(os.path.join(person_path, file))
-                        score = hamming_similarity(binary_probe, db_template)
-
-                        if score > best_score:
-                            best_score = score
-                            best_person = person
-
-            threshold_decision = 0.65
-
-            st.subheader("Recognition Result")
-            st.write("Similarity Score:", round(float(best_score), 3))
-
-            if best_score > threshold_decision:
-                st.success(f"Genuine Match: {best_person}")
-            else:
-                st.error("No Enrolled Identity Found (Impostor)")
-
-            st.divider()
-            st.subheader("📊 Performance & Technical Details")
-
-            colA, colB = st.columns(2)
-
-            with colA:
-                st.write("Embedding Dimension:", len(embedding))
-                st.write("Projection Matrix Shape:", R.shape)
-                st.write("Binary Template Length:", len(binary_probe))
-
-            with colB:
-                st.write("Number of 1s in Template:", int(np.sum(binary_probe)))
-                st.write("Number of 0s in Template:",
-                         int(len(binary_probe) - np.sum(binary_probe)))
-                st.write("Decision Threshold:", threshold_decision)
+            with col_stats:
+                st.markdown(f"""
+                <div class="info-card">
+                    <div style="color:#8892b0;font-size:0.75rem;text-transform:uppercase;letter-spacing:1px">Technical Details</div>
+                    <div style="color:#e0e0e0;font-size:0.85rem;margin-top:0.5rem">
+                        Modalities tested: {len(provided_probes)}<br>
+                        Matches found: {matches_count}<br>
+                        Threshold: {int(MATCH_THRESHOLD*100)}%<br>
+                        Template size: 128-bit
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)

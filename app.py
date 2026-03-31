@@ -305,13 +305,12 @@ with tab1:
 
             st.success(f"Enrolled **{person_name}** — {saved_count} images saved across {len(provided)} modalities.")
 
-
 # ═══════════════════════════════════════════════════════════════════
 # TAB 2 — TRAINING
 # ═══════════════════════════════════════════════════════════════════
 with tab2:
-    st.markdown("### Generate Protected Templates")
-    st.markdown("Creates cancelable binary templates for all enrolled modalities.")
+    st.markdown("### Generate Combined Protected Templates")
+    st.markdown("Creates **fused binary templates** by concatenating all enrolled modalities per person.")
 
     if st.button("Start Training", use_container_width=True, type="primary"):
 
@@ -327,79 +326,92 @@ with tab2:
                 st.error("No enrolled persons found.")
             else:
                 progress = st.progress(0, text="Initializing...")
-                total_steps = 0
-                completed = 0
 
-                # Count total work
-                for person in persons:
+                extractors = {
+                    "face": extract_face_embedding,
+                    "iris": extract_iris_embedding,
+                    "fingerprint": extract_fingerprint_embedding,
+                }
+
+                combined_dir = os.path.join(FEATURES_DIR, "combined_templates")
+                os.makedirs(combined_dir, exist_ok=True)
+
+                person_results = {}
+
+                for pi, person in enumerate(persons):
+                    progress.progress(
+                        (pi) / len(persons),
+                        text=f"Processing {person}..."
+                    )
+
+                    person_templates = {}
+                    available_mods = []
+
                     for mod in MODALITIES:
                         mod_dir = os.path.join(BASE_DATASET, person, mod)
-                        if os.path.isdir(mod_dir):
-                            total_steps += len([
-                                f for f in os.listdir(mod_dir)
-                                if f.lower().endswith(('.jpg', '.png', '.jpeg'))
-                            ])
+                        if not os.path.isdir(mod_dir):
+                            continue
 
-                if total_steps == 0:
-                    st.warning("No images found in enrolled data.")
-                else:
-                    extractors = {
-                        "face": extract_face_embedding,
-                        "iris": extract_iris_embedding,
-                        "fingerprint": extract_fingerprint_embedding,
-                    }
+                        images = [
+                            f for f in os.listdir(mod_dir)
+                            if f.lower().endswith(('.jpg', '.png', '.jpeg'))
+                        ]
+                        if not images:
+                            continue
 
-                    modality_stats = {mod: 0 for mod in MODALITIES}
+                        R = get_or_create_projection_matrix(
+                            f"projection_matrix_{mod}.npy"
+                        )
 
-                    for person in persons:
-                        for mod in MODALITIES:
-                            mod_dir = os.path.join(BASE_DATASET, person, mod)
-                            if not os.path.isdir(mod_dir):
-                                continue
+                        img_path = os.path.join(mod_dir, images[0])
+                        try:
+                            embedding = extractors[mod](img_path)
+                            binary_tmpl = create_binary_template(embedding, R)
+                            person_templates[mod] = binary_tmpl
+                            available_mods.append(mod)
+                        except Exception as e:
+                            st.caption(f"⚠️ Skipped {person}/{mod}: {e}")
 
-                            # Get or create projection matrix for this modality
-                            R = get_or_create_projection_matrix(
-                                f"projection_matrix_{mod}.npy"
-                            )
+                    if len(available_mods) >= 2:
+                        combined = np.concatenate(
+                            [person_templates[mod] for mod in available_mods]
+                        )
 
-                            output_dir = os.path.join(FEATURES_DIR, f"Mix_{mod}_grp", person)
-                            os.makedirs(output_dir, exist_ok=True)
+                        mod_key = "_".join(available_mods)
+                        person_out = os.path.join(combined_dir, person)
+                        os.makedirs(person_out, exist_ok=True)
+                        np.save(
+                            os.path.join(person_out, f"combined_{mod_key}.npy"),
+                            combined
+                        )
+                        with open(os.path.join(person_out, "modalities.txt"), "w") as f:
+                            f.write(",".join(available_mods))
 
-                            for filename in os.listdir(mod_dir):
-                                if not filename.lower().endswith(('.jpg', '.png', '.jpeg')):
-                                    continue
+                        person_results[person] = {
+                            "mods": available_mods,
+                            "bits": len(combined),
+                        }
+                    else:
+                        st.warning(f"⚠️ {person}: only {len(available_mods)} modality — need ≥2, skipped.")
 
-                                img_path = os.path.join(mod_dir, filename)
-                                try:
-                                    embedding = extractors[mod](img_path)
-                                    binary_tmpl = create_binary_template(embedding, R)
+                progress.progress(1.0, text="Complete!")
 
-                                    save_name = filename.rsplit('.', 1)[0] + ".npy"
-                                    np.save(os.path.join(output_dir, save_name), binary_tmpl)
-                                    modality_stats[mod] += 1
+                st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
+                st.markdown("#### Training Summary")
 
-                                except Exception as e:
-                                    st.caption(f"⚠️ Skipped {filename}: {e}")
+                for person, info in person_results.items():
+                    mod_badges = " + ".join(
+                        f"{MODALITY_ICONS[m]} {m.title()}" for m in info["mods"]
+                    )
+                    st.markdown(f"""
+                    <div class="info-card">
+                        <strong>{person}</strong><br>
+                        <span style="color:#64ffda">{mod_badges}</span><br>
+                        <span style="color:#8892b0">Combined template: {info["bits"]}-bit</span>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-                                completed += 1
-                                progress.progress(
-                                    completed / total_steps,
-                                    text=f"Processing {person} / {mod}..."
-                                )
-
-                    progress.progress(1.0, text="Complete!")
-
-                    # Summary
-                    st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
-                    st.markdown("#### Training Summary")
-                    summary_cols = st.columns(3)
-                    for i, mod in enumerate(MODALITIES):
-                        with summary_cols[i]:
-                            count = modality_stats[mod]
-                            icon = MODALITY_ICONS[mod]
-                            st.metric(f"{icon} {mod.title()}", f"{count} templates")
-
-                    st.success("Training completed successfully!")
+                st.success(f"Training completed! {len(person_results)} combined templates generated.")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -407,7 +419,7 @@ with tab2:
 # ═══════════════════════════════════════════════════════════════════
 with tab3:
     st.markdown("### Biometric Authentication")
-    st.markdown("Provide **at least 2 of 3** biometric samples to authenticate.")
+    st.markdown("Provide **at least 2 of 3** biometric samples. They are **fused into one combined pattern** for matching.")
 
     st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
 
@@ -457,7 +469,7 @@ with tab3:
                     probe_paths[mod] = temp_path
                     st.image(temp_path, use_container_width=True)
 
-    provided_probes = list(probe_paths.keys())
+    provided_probes = sorted(probe_paths.keys(), key=lambda m: MODALITIES.index(m))
 
     if len(provided_probes) > 0:
         status_html = ""
@@ -485,147 +497,158 @@ with tab3:
                 "fingerprint": extract_fingerprint_embedding,
             }
 
-            modality_results = {}
-            binary_probes = {}  # store for visualizer
+            combined_dir = os.path.join(FEATURES_DIR, "combined_templates")
 
-            with st.spinner("Analyzing biometric data..."):
-                for mod in provided_probes:
-                    proj_path = f"projection_matrix_{mod}.npy"
-                    features_base = os.path.join(FEATURES_DIR, f"Mix_{mod}_grp")
+            if not os.path.exists(combined_dir):
+                st.error("No combined templates found. Run **Training** first.")
+            else:
+                with st.spinner("Generating fused binary probe..."):
 
-                    if not os.path.exists(proj_path):
-                        modality_results[mod] = {
-                            "status": "error",
-                            "message": "No projection matrix. Run training first.",
-                        }
-                        continue
+                    # ── Build combined probe template ──
+                    probe_parts = {}
+                    for mod in provided_probes:
+                        proj_path = f"projection_matrix_{mod}.npy"
+                        if not os.path.exists(proj_path):
+                            st.error(f"No projection matrix for {mod}. Run training first.")
+                            st.stop()
 
-                    if not os.path.exists(features_base):
-                        modality_results[mod] = {
-                            "status": "error",
-                            "message": "No templates found. Run training first.",
-                        }
-                        continue
+                        R = np.load(proj_path)
+                        embedding = extractors[mod](probe_paths[mod])
+                        probe_parts[mod] = create_binary_template(embedding, R)
 
-                    R = np.load(proj_path)
-                    embedding = extractors[mod](probe_paths[mod])
-                    binary_probe = create_binary_template(embedding, R)
-                    binary_probes[mod] = binary_probe
+                    combined_probe = np.concatenate(
+                        [probe_parts[mod] for mod in provided_probes]
+                    )
 
+                    # ── Compare against enrolled combined templates ──
                     best_score = -1.0
                     best_person = "Unknown"
+                    compared_count = 0
 
-                    for person in os.listdir(features_base):
-                        person_dir = os.path.join(features_base, person)
+                    for person in os.listdir(combined_dir):
+                        person_dir = os.path.join(combined_dir, person)
                         if not os.path.isdir(person_dir):
                             continue
+
+                        mod_file = os.path.join(person_dir, "modalities.txt")
+                        if not os.path.exists(mod_file):
+                            continue
+
+                        with open(mod_file) as f:
+                            enrolled_mods = f.read().strip().split(",")
+
+                        if not all(m in enrolled_mods for m in provided_probes):
+                            continue
+
                         for tmpl_file in os.listdir(person_dir):
                             if not tmpl_file.endswith(".npy"):
                                 continue
+
                             db_template = np.load(os.path.join(person_dir, tmpl_file))
-                            score = hamming_similarity(binary_probe, db_template)
-                            if score > best_score:
-                                best_score = score
-                                best_person = person
+                            enrolled_mod_key = tmpl_file.replace("combined_", "").replace(".npy", "")
+                            enrolled_mod_list = enrolled_mod_key.split("_")
 
-                    matched = best_score > MATCH_THRESHOLD
-                    modality_results[mod] = {
-                        "status": "match" if matched else "no_match",
-                        "score": best_score,
-                        "person": best_person,
-                        "matched": matched,
-                    }
+                            # Extract matching chunks in probe order
+                            chunk_size = 128
+                            extracted_parts = []
+                            for pm in provided_probes:
+                                if pm in enrolled_mod_list:
+                                    idx = enrolled_mod_list.index(pm)
+                                    extracted_parts.append(
+                                        db_template[idx * chunk_size : (idx + 1) * chunk_size]
+                                    )
+                            if len(extracted_parts) == len(provided_probes):
+                                db_subset = np.concatenate(extracted_parts)
+                                score = hamming_similarity(combined_probe, db_subset)
+                                compared_count += 1
+                                if score > best_score:
+                                    best_score = score
+                                    best_person = person
 
-            # ── Display per-modality results ──
-            st.markdown("#### Per-Modality Results")
-            result_cols = st.columns(len(provided_probes))
+                matched = best_score > MATCH_THRESHOLD
 
-            matches_count = 0
-            matched_person = "Unknown"
+                # ── Display Result ──
+                st.markdown("#### Combined Fusion Result")
 
-            for i, mod in enumerate(provided_probes):
-                res = modality_results[mod]
-                with result_cols[i]:
-                    st.markdown(f"**{MODALITY_ICONS[mod]} {mod.title()}**")
+                col_score, col_decision = st.columns([1, 2])
 
-                    if res["status"] == "error":
-                        st.error(res["message"])
-                    else:
-                        score_pct = round(res["score"] * 100, 1)
-                        color = "#64ffda" if res["matched"] else "#ef9a9a"
+                with col_score:
+                    score_pct = round(best_score * 100, 1) if best_score >= 0 else 0
+                    color = "#64ffda" if matched else "#ef9a9a"
+                    mod_label = " + ".join(
+                        f"{MODALITY_ICONS[m]} {m.title()}" for m in provided_probes
+                    )
+                    st.markdown(f"""
+                    <div class="score-box">
+                        <div class="score-label">Fused Score</div>
+                        <div class="score-value" style="color:{color}">{score_pct}%</div>
+                        <div style="color:#8892b0;font-size:0.85rem">
+                            {mod_label}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with col_decision:
+                    if compared_count == 0:
+                        st.markdown("""
+                        <div class="result-fail">
+                            <h2>⚠️ NO MATCH POSSIBLE</h2>
+                            <p>No enrolled person has a matching modality combination. Re-train first.</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    elif matched:
                         st.markdown(f"""
-                        <div class="score-box">
-                            <div class="score-label">{mod.title()} Score</div>
-                            <div class="score-value" style="color:{color}">{score_pct}%</div>
-                            <div style="color:#8892b0;font-size:0.85rem">
-                                Best match: {res["person"]}
-                            </div>
+                        <div class="result-pass">
+                            <h2>✅ AUTHENTICATED</h2>
+                            <p>Identity: <strong>{best_person}</strong> — Fused similarity: {score_pct}%</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"""
+                        <div class="result-fail">
+                            <h2>❌ REJECTED</h2>
+                            <p>Best match: {best_person} ({score_pct}%) — below {int(MATCH_THRESHOLD*100)}% threshold</p>
                         </div>
                         """, unsafe_allow_html=True)
 
-                        if res["matched"]:
-                            matches_count += 1
-                            matched_person = res["person"]
-
-            # ── Final Decision ──
-            st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
-            st.markdown("#### Final Decision")
-
-            col_decision, col_stats = st.columns([2, 1])
-
-            with col_decision:
-                if matches_count >= 2:
-                    st.markdown(f"""
-                    <div class="result-pass">
-                        <h2>✅ AUTHENTICATED</h2>
-                        <p>Identity: <strong>{matched_person}</strong> — {matches_count}/{len(provided_probes)} modalities matched</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    st.markdown(f"""
-                    <div class="result-fail">
-                        <h2>❌ REJECTED</h2>
-                        <p>Only {matches_count}/{len(provided_probes)} modalities matched (minimum 2 required)</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            with col_stats:
+                # ── Technical Details ──
                 st.markdown(f"""
                 <div class="info-card">
                     <div style="color:#8892b0;font-size:0.75rem;text-transform:uppercase;letter-spacing:1px">Technical Details</div>
                     <div style="color:#e0e0e0;font-size:0.85rem;margin-top:0.5rem">
-                        Modalities tested: {len(provided_probes)}<br>
-                        Matches found: {matches_count}<br>
-                        Threshold: {int(MATCH_THRESHOLD*100)}%<br>
-                        Template size: 128-bit
+                        Modalities fused: {len(provided_probes)} ({", ".join(provided_probes)})<br>
+                        Combined template size: {len(combined_probe)}-bit ({len(provided_probes)} × 128)<br>
+                        Persons compared: {compared_count}<br>
+                        Threshold: {int(MATCH_THRESHOLD*100)}%
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
 
-            # ════════════════════════════════════════════════════════
-            # BINARY TEMPLATE VISUALIZER
-            # ════════════════════════════════════════════════════════
-            if binary_probes:
+                # ════════════════════════════════════════════════════════
+                # BINARY TEMPLATE VISUALIZER — COMBINED
+                # ════════════════════════════════════════════════════════
                 st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
-                st.markdown("#### 🧬 Binary Template Visualizer")
-                st.caption("128-bit protected binary template shown as 8 rows × 16 columns of 1s and 0s.")
+                st.markdown("#### 🧬 Combined Binary Template")
+                st.caption(
+                    f"Fused {len(provided_probes)}-modality template "
+                    f"({len(combined_probe)}-bit = {len(provided_probes)} × 128 bits)"
+                )
 
-                viz_cols = st.columns(len(binary_probes))
+                for mod in provided_probes:
+                    tmpl = probe_parts[mod]
+                    bits = tmpl[:128].astype(int)
+                    rows = []
+                    for row in range(8):
+                        row_bits = bits[row * 16 : (row + 1) * 16]
+                        rows.append("  ".join(str(b) for b in row_bits))
+                    binary_text = "\n".join(rows)
 
-                for i, (mod, tmpl) in enumerate(binary_probes.items()):
-                    with viz_cols[i]:
-                        st.markdown(f"**{MODALITY_ICONS[mod]} {mod.title()}**")
+                    ones = int(np.sum(tmpl))
+                    zeros = len(tmpl) - ones
+                    st.markdown(f"**{MODALITY_ICONS[mod]} {mod.title()} segment** — 1s: {ones} | 0s: {zeros}")
+                    st.code(binary_text, language=None)
 
-                        # Build 1s and 0s text grid (8 rows × 16 cols)
-                        bits = tmpl[:128].astype(int)
-                        rows = []
-                        for row in range(8):
-                            row_bits = bits[row * 16 : (row + 1) * 16]
-                            rows.append("  ".join(str(b) for b in row_bits))
-                        binary_text = "\n".join(rows)
-                        st.code(binary_text, language=None)
-
-                        # Stats
-                        ones = int(np.sum(tmpl))
-                        zeros = len(tmpl) - ones
-                        st.caption(f"1s: {ones}  |  0s: {zeros}  |  Entropy: {min(ones,zeros)/len(tmpl)*2:.2f}")
+                st.markdown("**🔗 Full Combined Pattern**")
+                full_str = "".join(str(int(b)) for b in combined_probe)
+                st.code(full_str, language=None)
+                st.caption(f"Total: {int(np.sum(combined_probe))} ones / {len(combined_probe)} bits")

@@ -2,14 +2,6 @@ import streamlit as st
 import os
 import numpy as np
 
-# Streamlit Cloud missing libGL/libgthread fix for DeepFace's forced opencv-python dependency
-try:
-    import cv2
-except ImportError:
-    import os
-    os.system("pip uninstall -y opencv-python opencv-contrib-python")
-    os.system("pip install opencv-python-headless")
-    
 from deepface import DeepFace
 
 def set_background(image_file):

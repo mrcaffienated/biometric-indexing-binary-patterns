@@ -625,7 +625,7 @@ with tab3:
                 """, unsafe_allow_html=True)
 
                 # ════════════════════════════════════════════════════════
-                # BINARY TEMPLATE VISUALIZER — COMBINED
+                # BINARY TEMPLATE VISUALIZER — COMBINED ONLY
                 # ════════════════════════════════════════════════════════
                 st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
                 st.markdown("#### 🧬 Combined Binary Template")
@@ -634,21 +634,8 @@ with tab3:
                     f"({len(combined_probe)}-bit = {len(provided_probes)} × 128 bits)"
                 )
 
-                for mod in provided_probes:
-                    tmpl = probe_parts[mod]
-                    bits = tmpl[:128].astype(int)
-                    rows = []
-                    for row in range(8):
-                        row_bits = bits[row * 16 : (row + 1) * 16]
-                        rows.append("  ".join(str(b) for b in row_bits))
-                    binary_text = "\n".join(rows)
-
-                    ones = int(np.sum(tmpl))
-                    zeros = len(tmpl) - ones
-                    st.markdown(f"**{MODALITY_ICONS[mod]} {mod.title()} segment** — 1s: {ones} | 0s: {zeros}")
-                    st.code(binary_text, language=None)
-
                 st.markdown("**🔗 Full Combined Pattern**")
                 full_str = "".join(str(int(b)) for b in combined_probe)
                 st.code(full_str, language=None)
                 st.caption(f"Total: {int(np.sum(combined_probe))} ones / {len(combined_probe)} bits")
+

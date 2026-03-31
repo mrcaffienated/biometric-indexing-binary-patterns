@@ -239,15 +239,30 @@ with tab1:
     for i, mod in enumerate(MODALITIES):
         with cols[i]:
             st.markdown(f"**{MODALITY_ICONS[mod]} {mod.title()}**")
-            input_method = st.radio(
-                "Input", ["📁 Upload", "📷 Camera"],
-                key=f"enroll_method_{mod}",
-                horizontal=True,
-            )
 
             enroll_data[mod] = []
 
-            if input_method == "📁 Upload":
+            if mod == "face":
+                input_method = st.radio(
+                    "Input", ["📁 Upload", "📷 Camera"],
+                    key=f"enroll_method_{mod}",
+                    horizontal=True,
+                )
+
+                if input_method == "📁 Upload":
+                    uploaded = st.file_uploader(
+                        f"Upload {mod} images",
+                        type=["jpg", "png", "jpeg"],
+                        accept_multiple_files=True,
+                        key=f"enroll_{mod}",
+                    )
+                    if uploaded:
+                        enroll_data[mod] = uploaded
+                else:
+                    cam_img = st.camera_input(f"Capture {mod}", key=f"enroll_cam_{mod}")
+                    if cam_img is not None:
+                        enroll_data[mod] = [cam_img]
+            else:
                 uploaded = st.file_uploader(
                     f"Upload {mod} images",
                     type=["jpg", "png", "jpeg"],
@@ -256,10 +271,6 @@ with tab1:
                 )
                 if uploaded:
                     enroll_data[mod] = uploaded
-            else:
-                cam_img = st.camera_input(f"Capture {mod}", key=f"enroll_cam_{mod}")
-                if cam_img is not None:
-                    enroll_data[mod] = [cam_img]
 
     # Count how many modalities have data
     provided = [mod for mod in MODALITIES if enroll_data[mod]]
@@ -406,13 +417,34 @@ with tab3:
     for i, mod in enumerate(MODALITIES):
         with test_cols[i]:
             st.markdown(f"**{MODALITY_ICONS[mod]} {mod.title()}**")
-            test_method = st.radio(
-                "Input", ["📁 Upload", "📷 Camera"],
-                key=f"test_method_{mod}",
-                horizontal=True,
-            )
 
-            if test_method == "📁 Upload":
+            if mod == "face":
+                test_method = st.radio(
+                    "Input", ["📁 Upload", "📷 Camera"],
+                    key=f"test_method_{mod}",
+                    horizontal=True,
+                )
+
+                if test_method == "📁 Upload":
+                    uploaded = st.file_uploader(
+                        f"Upload {mod} image",
+                        type=["jpg", "png", "jpeg"],
+                        key=f"test_{mod}",
+                    )
+                    if uploaded is not None:
+                        temp_path = f"temp_probe_{mod}.jpg"
+                        with open(temp_path, "wb") as f:
+                            f.write(uploaded.read())
+                        probe_paths[mod] = temp_path
+                        st.image(temp_path, use_container_width=True)
+                else:
+                    cam_img = st.camera_input(f"Capture {mod}", key=f"test_cam_{mod}")
+                    if cam_img is not None:
+                        temp_path = f"temp_probe_{mod}.jpg"
+                        with open(temp_path, "wb") as f:
+                            f.write(cam_img.getbuffer())
+                        probe_paths[mod] = temp_path
+            else:
                 uploaded = st.file_uploader(
                     f"Upload {mod} image",
                     type=["jpg", "png", "jpeg"],
@@ -424,13 +456,6 @@ with tab3:
                         f.write(uploaded.read())
                     probe_paths[mod] = temp_path
                     st.image(temp_path, use_container_width=True)
-            else:
-                cam_img = st.camera_input(f"Capture {mod}", key=f"test_cam_{mod}")
-                if cam_img is not None:
-                    temp_path = f"temp_probe_{mod}.jpg"
-                    with open(temp_path, "wb") as f:
-                        f.write(cam_img.getbuffer())
-                    probe_paths[mod] = temp_path
 
     provided_probes = list(probe_paths.keys())
 

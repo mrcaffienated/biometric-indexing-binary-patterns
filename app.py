@@ -167,7 +167,7 @@ st.markdown("""
 
 MODALITIES = ["face", "iris", "fingerprint"]
 MODALITY_ICONS = {"face": "👤", "iris": "👁️", "fingerprint": "🖐️"}
-MATCH_THRESHOLD = 0.65
+MATCH_THRESHOLD = 0.80
 BASE_DATASET = "lfw_subset"
 FEATURES_DIR = "test_features"
 

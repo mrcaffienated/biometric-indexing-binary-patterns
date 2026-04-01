@@ -652,29 +652,58 @@ with tab3:
                 # FBP PATTERN VISUALIZER
                 # ════════════════════════════════════════════════════════
                 st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
-                st.markdown("#### 🧬 Frequent Binary Patterns")
+                st.markdown("#### 🧬 Combined Binary Pattern")
+
+                MAX_PATTERN_LEN = 30  # max digits to display
+
+                # Concatenate top patterns into a single binary string
+                probe_concat = "".join(probe_top)[:MAX_PATTERN_LEN]
+                enrolled_concat = "".join(best_enrolled_patterns)[:MAX_PATTERN_LEN] if best_enrolled_patterns else ""
+
                 st.caption(
-                    f"Top {len(probe_top)} frequent patterns extracted from "
-                    f"{len(provided_probes)} modalities (window={FBP_WINDOW_LENGTH} bits)"
+                    f"Top frequent patterns concatenated into a {len(probe_concat)}-bit binary index "
+                    f"(from {len(provided_probes)} modalities)"
                 )
 
                 col_probe, col_enrolled = st.columns(2)
 
                 with col_probe:
-                    st.markdown("**🔍 Probe Patterns**")
-                    for idx, p in enumerate(probe_top, 1):
-                        marker = "🟢" if p in matching_patterns else "🔴"
-                        st.code(f"{marker} {idx:2d}. {p}", language=None)
+                    st.markdown("**🔍 Probe Pattern**")
+                    st.code(probe_concat, language=None)
 
                 with col_enrolled:
-                    if best_enrolled_patterns:
-                        st.markdown(f"**📋 Enrolled ({best_person}) Patterns**")
-                        for idx, p in enumerate(best_enrolled_patterns[:FBP_TOP_N], 1):
-                            marker = "🟢" if p in matching_patterns else "🔴"
-                            st.code(f"{marker} {idx:2d}. {p}", language=None)
+                    if enrolled_concat:
+                        st.markdown(f"**📋 Enrolled ({best_person}) Pattern**")
+                        st.code(enrolled_concat, language=None)
+
+                # Show bit-level match visualization
+                if probe_concat and enrolled_concat:
+                    min_len = min(len(probe_concat), len(enrolled_concat))
+                    match_bits = sum(1 for a, b in zip(probe_concat[:min_len], enrolled_concat[:min_len]) if a == b)
+                    bit_match_pct = round(match_bits / min_len * 100, 1)
+
+                    # Build colored diff string
+                    diff_html = ""
+                    for i in range(min_len):
+                        if probe_concat[i] == enrolled_concat[i]:
+                            diff_html += f'<span style="color:#64ffda">{probe_concat[i]}</span>'
+                        else:
+                            diff_html += f'<span style="color:#ef9a9a">{probe_concat[i]}</span>'
+
+                    st.markdown(f"""
+                    <div class="info-card">
+                        <div style="color:#8892b0;font-size:0.75rem;text-transform:uppercase;letter-spacing:1px">Bit-Level Comparison</div>
+                        <div style="font-family:monospace;font-size:1.1rem;margin-top:0.5rem;letter-spacing:2px">{diff_html}</div>
+                        <div style="color:#8892b0;font-size:0.85rem;margin-top:0.5rem">
+                            {match_bits}/{min_len} bits match ({bit_match_pct}%) · 
+                            <span style="color:#64ffda">■</span> match  
+                            <span style="color:#ef9a9a">■</span> mismatch
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
                 if matching_patterns:
-                    st.success(f"✅ {len(matching_patterns)} common patterns found: {', '.join(sorted(matching_patterns))}")
+                    st.success(f"✅ {len(matching_patterns)}/{FBP_TOP_N} frequent patterns overlap between probe and enrolled index.")
                 else:
                     st.warning("⚠️ No common patterns found between probe and enrolled data.")
 

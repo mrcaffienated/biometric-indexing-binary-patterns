@@ -12,7 +12,11 @@ from feature_utils import (
     create_binary_template,
     hamming_similarity,
     get_or_create_projection_matrix,
+    extract_frequent_patterns,
+    rank_patterns_across_modalities,
+    fbp_similarity,
 )
+import json
 
 # ═══════════════════════════════════════════════════════════════════
 # PAGE CONFIG & CUSTOM CSS
@@ -167,7 +171,9 @@ st.markdown("""
 
 MODALITIES = ["face", "iris", "fingerprint"]
 MODALITY_ICONS = {"face": "👤", "iris": "👁️", "fingerprint": "🖐️"}
-MATCH_THRESHOLD = 0.80
+MATCH_THRESHOLD = 0.60
+FBP_WINDOW_LENGTH = 6
+FBP_TOP_N = 15
 BASE_DATASET = "lfw_subset"
 FEATURES_DIR = "test_features"
 
@@ -308,11 +314,11 @@ with tab1:
             st.success(f"Enrolled **{person_name}** — {saved_count} images saved across {len(provided)} modalities.")
 
 # ═══════════════════════════════════════════════════════════════════
-# TAB 2 — TRAINING
+# TAB 2 — TRAINING (FBP Indexing)
 # ═══════════════════════════════════════════════════════════════════
 with tab2:
-    st.markdown("### Generate Combined Protected Templates")
-    st.markdown("Creates **fused binary templates** by concatenating all enrolled modalities per person.")
+    st.markdown("### Generate Frequent Binary Pattern Index")
+    st.markdown("Extracts **frequent binary patterns** from each modality, ranks them across modalities, and stores a **compact index** per person.")
 
     if st.button("Start Training", use_container_width=True, type="primary"):
 
@@ -375,23 +381,40 @@ with tab2:
                             st.caption(f"⚠️ Skipped {person}/{mod}: {e}")
 
                     if len(available_mods) >= 2:
-                        combined = np.concatenate(
-                            [person_templates[mod] for mod in available_mods]
-                        )
+                        # ── FBP: Extract frequent patterns per modality ──
+                        pattern_lists = []
+                        per_mod_patterns = {}
+                        for mod in available_mods:
+                            patterns = extract_frequent_patterns(
+                                person_templates[mod], FBP_WINDOW_LENGTH
+                            )
+                            pattern_lists.append(patterns)
+                            per_mod_patterns[mod] = patterns[:FBP_TOP_N]
 
-                        mod_key = "_".join(available_mods)
+                        # ── Rank patterns across modalities ──
+                        ranked_patterns = rank_patterns_across_modalities(pattern_lists)
+                        top_patterns = ranked_patterns[:FBP_TOP_N]
+
+                        # ── Save FBP index ──
                         person_out = os.path.join(combined_dir, person)
                         os.makedirs(person_out, exist_ok=True)
-                        np.save(
-                            os.path.join(person_out, f"combined_{mod_key}.npy"),
-                            combined
-                        )
+
+                        fbp_data = {
+                            "modalities": available_mods,
+                            "ranked_patterns": top_patterns,
+                            "per_modality_patterns": per_mod_patterns,
+                            "window_length": FBP_WINDOW_LENGTH,
+                        }
+                        with open(os.path.join(person_out, "fbp_index.json"), "w") as f:
+                            json.dump(fbp_data, f)
+
                         with open(os.path.join(person_out, "modalities.txt"), "w") as f:
                             f.write(",".join(available_mods))
 
                         person_results[person] = {
                             "mods": available_mods,
-                            "bits": len(combined),
+                            "num_patterns": len(top_patterns),
+                            "top_patterns": top_patterns[:5],
                         }
                     else:
                         st.warning(f"⚠️ {person}: only {len(available_mods)} modality — need ≥2, skipped.")
@@ -405,23 +428,25 @@ with tab2:
                     mod_badges = " + ".join(
                         f"{MODALITY_ICONS[m]} {m.title()}" for m in info["mods"]
                     )
+                    pattern_preview = ", ".join(info["top_patterns"][:3])
                     st.markdown(f"""
                     <div class="info-card">
                         <strong>{person}</strong><br>
                         <span style="color:#64ffda">{mod_badges}</span><br>
-                        <span style="color:#8892b0">Combined template: {info["bits"]}-bit</span>
+                        <span style="color:#8892b0">FBP Index: {info["num_patterns"]} frequent patterns (window={FBP_WINDOW_LENGTH})</span><br>
+                        <span style="color:#5a6a8a;font-size:0.8rem">Top patterns: <code>{pattern_preview}…</code></span>
                     </div>
                     """, unsafe_allow_html=True)
 
-                st.success(f"Training completed! {len(person_results)} combined templates generated.")
+                st.success(f"Training completed! {len(person_results)} FBP indexes generated.")
 
 
 # ═══════════════════════════════════════════════════════════════════
-# TAB 3 — TESTING
+# TAB 3 — TESTING (FBP Authentication)
 # ═══════════════════════════════════════════════════════════════════
 with tab3:
     st.markdown("### Biometric Authentication")
-    st.markdown("Provide **at least 2 of 3** biometric samples. They are **fused into one combined pattern** for matching.")
+    st.markdown("Provide **at least 2 of 3** biometric samples. FBP patterns are extracted and matched against enrolled indexes.")
 
     st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
 
@@ -502,12 +527,13 @@ with tab3:
             combined_dir = os.path.join(FEATURES_DIR, "combined_templates")
 
             if not os.path.exists(combined_dir):
-                st.error("No combined templates found. Run **Training** first.")
+                st.error("No FBP indexes found. Run **Training** first.")
             else:
-                with st.spinner("Generating fused binary probe..."):
+                with st.spinner("Extracting frequent binary patterns from probe..."):
 
-                    # ── Build combined probe template ──
-                    probe_parts = {}
+                    # ── Build probe FBP patterns ──
+                    probe_binary = {}
+                    probe_pattern_lists = []
                     for mod in provided_probes:
                         proj_path = f"projection_matrix_{mod}.npy"
                         if not os.path.exists(proj_path):
@@ -516,15 +542,21 @@ with tab3:
 
                         R = np.load(proj_path)
                         embedding = extractors[mod](probe_paths[mod])
-                        probe_parts[mod] = create_binary_template(embedding, R)
+                        binary_tmpl = create_binary_template(embedding, R)
+                        probe_binary[mod] = binary_tmpl
 
-                    combined_probe = np.concatenate(
-                        [probe_parts[mod] for mod in provided_probes]
-                    )
+                        # Extract frequent patterns from probe
+                        patterns = extract_frequent_patterns(binary_tmpl, FBP_WINDOW_LENGTH)
+                        probe_pattern_lists.append(patterns)
 
-                    # ── Compare against enrolled combined templates ──
+                    # Rank probe patterns across modalities
+                    probe_ranked = rank_patterns_across_modalities(probe_pattern_lists)
+                    probe_top = probe_ranked[:FBP_TOP_N]
+
+                    # ── Compare against enrolled FBP indexes ──
                     best_score = -1.0
                     best_person = "Unknown"
+                    best_enrolled_patterns = []
                     compared_count = 0
 
                     for person in os.listdir(combined_dir):
@@ -532,45 +564,32 @@ with tab3:
                         if not os.path.isdir(person_dir):
                             continue
 
-                        mod_file = os.path.join(person_dir, "modalities.txt")
-                        if not os.path.exists(mod_file):
+                        fbp_file = os.path.join(person_dir, "fbp_index.json")
+                        if not os.path.exists(fbp_file):
                             continue
 
-                        with open(mod_file) as f:
-                            enrolled_mods = f.read().strip().split(",")
+                        with open(fbp_file) as f:
+                            fbp_data = json.load(f)
 
+                        enrolled_mods = fbp_data["modalities"]
+
+                        # Check that probe modalities are covered
                         if not all(m in enrolled_mods for m in provided_probes):
                             continue
 
-                        for tmpl_file in os.listdir(person_dir):
-                            if not tmpl_file.endswith(".npy"):
-                                continue
+                        enrolled_patterns = fbp_data["ranked_patterns"]
+                        score = fbp_similarity(probe_top, enrolled_patterns, FBP_TOP_N)
+                        compared_count += 1
 
-                            db_template = np.load(os.path.join(person_dir, tmpl_file))
-                            enrolled_mod_key = tmpl_file.replace("combined_", "").replace(".npy", "")
-                            enrolled_mod_list = enrolled_mod_key.split("_")
-
-                            # Extract matching chunks in probe order
-                            chunk_size = 128
-                            extracted_parts = []
-                            for pm in provided_probes:
-                                if pm in enrolled_mod_list:
-                                    idx = enrolled_mod_list.index(pm)
-                                    extracted_parts.append(
-                                        db_template[idx * chunk_size : (idx + 1) * chunk_size]
-                                    )
-                            if len(extracted_parts) == len(provided_probes):
-                                db_subset = np.concatenate(extracted_parts)
-                                score = hamming_similarity(combined_probe, db_subset)
-                                compared_count += 1
-                                if score > best_score:
-                                    best_score = score
-                                    best_person = person
+                        if score > best_score:
+                            best_score = score
+                            best_person = person
+                            best_enrolled_patterns = enrolled_patterns
 
                 matched = best_score > MATCH_THRESHOLD
 
                 # ── Display Result ──
-                st.markdown("#### Combined Fusion Result")
+                st.markdown("#### FBP Authentication Result")
 
                 col_score, col_decision = st.columns([1, 2])
 
@@ -582,7 +601,7 @@ with tab3:
                     )
                     st.markdown(f"""
                     <div class="score-box">
-                        <div class="score-label">Fused Score</div>
+                        <div class="score-label">FBP Similarity</div>
                         <div class="score-value" style="color:{color}">{score_pct}%</div>
                         <div style="color:#8892b0;font-size:0.85rem">
                             {mod_label}
@@ -602,7 +621,7 @@ with tab3:
                         st.markdown(f"""
                         <div class="result-pass">
                             <h2>✅ AUTHENTICATED</h2>
-                            <p>Identity: <strong>{best_person}</strong> — Fused similarity: {score_pct}%</p>
+                            <p>Identity: <strong>{best_person}</strong> — FBP similarity: {score_pct}%</p>
                         </div>
                         """, unsafe_allow_html=True)
                     else:
@@ -614,12 +633,15 @@ with tab3:
                         """, unsafe_allow_html=True)
 
                 # ── Technical Details ──
+                matching_patterns = set(probe_top).intersection(set(best_enrolled_patterns)) if best_enrolled_patterns else set()
                 st.markdown(f"""
                 <div class="info-card">
                     <div style="color:#8892b0;font-size:0.75rem;text-transform:uppercase;letter-spacing:1px">Technical Details</div>
                     <div style="color:#e0e0e0;font-size:0.85rem;margin-top:0.5rem">
-                        Modalities fused: {len(provided_probes)} ({", ".join(provided_probes)})<br>
-                        Combined template size: {len(combined_probe)}-bit ({len(provided_probes)} × 128)<br>
+                        Method: Frequent Binary Pattern (FBP) Indexing<br>
+                        Window length: {FBP_WINDOW_LENGTH} bits (2<sup>{FBP_WINDOW_LENGTH}</sup> = {2**FBP_WINDOW_LENGTH} possible patterns)<br>
+                        Probe patterns: {len(probe_top)} | Enrolled patterns: {len(best_enrolled_patterns)}<br>
+                        Matching patterns: {len(matching_patterns)} / {FBP_TOP_N}<br>
                         Persons compared: {compared_count}<br>
                         Threshold: {int(MATCH_THRESHOLD*100)}%
                     </div>
@@ -627,17 +649,32 @@ with tab3:
                 """, unsafe_allow_html=True)
 
                 # ════════════════════════════════════════════════════════
-                # BINARY TEMPLATE VISUALIZER — COMBINED ONLY
+                # FBP PATTERN VISUALIZER
                 # ════════════════════════════════════════════════════════
                 st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
-                st.markdown("#### 🧬 Combined Binary Template")
+                st.markdown("#### 🧬 Frequent Binary Patterns")
                 st.caption(
-                    f"Fused {len(provided_probes)}-modality template "
-                    f"({len(combined_probe)}-bit = {len(provided_probes)} × 128 bits)"
+                    f"Top {len(probe_top)} frequent patterns extracted from "
+                    f"{len(provided_probes)} modalities (window={FBP_WINDOW_LENGTH} bits)"
                 )
 
-                st.markdown("**🔗 Full Combined Pattern**")
-                full_str = "".join(str(int(b)) for b in combined_probe)
-                st.code(full_str, language=None)
-                st.caption(f"Total: {int(np.sum(combined_probe))} ones / {len(combined_probe)} bits")
+                col_probe, col_enrolled = st.columns(2)
+
+                with col_probe:
+                    st.markdown("**🔍 Probe Patterns**")
+                    for idx, p in enumerate(probe_top, 1):
+                        marker = "🟢" if p in matching_patterns else "🔴"
+                        st.code(f"{marker} {idx:2d}. {p}", language=None)
+
+                with col_enrolled:
+                    if best_enrolled_patterns:
+                        st.markdown(f"**📋 Enrolled ({best_person}) Patterns**")
+                        for idx, p in enumerate(best_enrolled_patterns[:FBP_TOP_N], 1):
+                            marker = "🟢" if p in matching_patterns else "🔴"
+                            st.code(f"{marker} {idx:2d}. {p}", language=None)
+
+                if matching_patterns:
+                    st.success(f"✅ {len(matching_patterns)} common patterns found: {', '.join(sorted(matching_patterns))}")
+                else:
+                    st.warning("⚠️ No common patterns found between probe and enrolled data.")
 

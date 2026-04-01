@@ -101,3 +101,101 @@ def get_or_create_projection_matrix(path: str, dim: int = 128) -> np.ndarray:
     R = np.random.randn(dim, dim)
     np.save(path, R)
     return R
+
+
+# ── Frequent Binary Pattern (FBP) Functions ─────────────────────────
+
+def extract_frequent_patterns(binary_template: np.ndarray, window_length: int = 6) -> list:
+    """
+    Extract frequent binary sub-patterns from a binary template using a sliding window.
+    Returns a list of pattern strings ranked by frequency (most frequent first).
+    Only patterns occurring more than once are included.
+    """
+    from itertools import product as iter_product
+
+    # Generate all possible K-length binary combinations
+    K_combinations = {}
+    for c in enumerate(iter_product(range(2), repeat=window_length)):
+        K_combinations[str(c[1])] = 0
+
+    # Slide window across binary template and count pattern occurrences
+    i = 0
+    while i < (len(binary_template) - window_length) or (len(binary_template) - i >= window_length):
+        candidate = binary_template[i:i + window_length]
+        candidate_str = str(tuple(map(int, candidate)))
+        if candidate_str in K_combinations:
+            K_combinations[candidate_str] += 1
+        i += 1
+
+    # Sort by frequency (descending)
+    sorted_patterns = dict(sorted(K_combinations.items(), key=lambda x: x[1], reverse=True))
+
+    # Keep only patterns with frequency > 1
+    frequent = [k for k, v in sorted_patterns.items() if v > 1]
+
+    # Clean pattern strings: "(0, 1, 1, 0, 1, 0)" -> "011010"
+    cleaned = []
+    for code in frequent:
+        code = code.strip('()')
+        parts = code.split(',')
+        pattern = ''.join(p.strip() for p in parts)
+        cleaned.append(pattern)
+
+    return cleaned
+
+
+def rank_patterns_across_modalities(pattern_lists: list) -> list:
+    """
+    Rank frequent patterns across 2 or 3 modalities.
+    Finds patterns common to all modalities and ranks them by combined rank (lower = better).
+    Returns a list of pattern strings ordered by rank.
+    """
+    if len(pattern_lists) < 2:
+        return pattern_lists[0] if pattern_lists else []
+
+    # Find patterns common to ALL modalities
+    common_patterns = set(pattern_lists[0])
+    for plist in pattern_lists[1:]:
+        common_patterns = common_patterns.intersection(set(plist))
+
+    if not common_patterns:
+        # Fallback: if no common patterns, use patterns from first modality
+        return pattern_lists[0][:15]
+
+    # Rank by sum of positions across all modalities (lower = more frequent in all)
+    ranked = []
+    for pattern in common_patterns:
+        total_rank = 0
+        for plist in pattern_lists:
+            if pattern in plist:
+                total_rank += plist.index(pattern)
+            else:
+                total_rank += len(plist)
+        ranked.append((pattern, total_rank))
+
+    # Sort by combined rank (ascending = best first)
+    ranked.sort(key=lambda x: x[1])
+
+    return [p[0] for p in ranked]
+
+
+def fbp_similarity(probe_patterns: list, enrolled_patterns: list, top_n: int = 15) -> float:
+    """
+    Compute similarity between probe and enrolled frequent patterns.
+    Uses Jaccard-like measure: overlap of top-N patterns / top-N.
+    Returns similarity as a float between 0.0 and 1.0.
+    """
+    probe_set = set(probe_patterns[:top_n])
+    enrolled_set = set(enrolled_patterns[:top_n])
+
+    if not probe_set or not enrolled_set:
+        return 0.0
+
+    overlap = len(probe_set.intersection(enrolled_set))
+    union = len(probe_set.union(enrolled_set))
+
+    if union == 0:
+        return 0.0
+
+    return overlap / union
+

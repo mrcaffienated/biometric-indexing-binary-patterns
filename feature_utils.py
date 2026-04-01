@@ -24,11 +24,20 @@ def extract_face_embedding(image_path: str) -> np.ndarray:
 # ── Generic CNN Embedding (for Iris & Fingerprint) ──────────────────
 _mobilenet_model = None
 
+# Compatible imports for both TF ≤2.15 (tensorflow.keras) and TF ≥2.16 (standalone keras)
+try:
+    from tensorflow.keras.applications import MobileNetV2
+    from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+    from tensorflow.keras.preprocessing.image import load_img, img_to_array
+except (ImportError, AttributeError):
+    from keras.applications import MobileNetV2
+    from keras.applications.mobilenet_v2 import preprocess_input
+    from keras.utils import load_img, img_to_array
+
 def _get_mobilenet():
     """Lazy-load MobileNetV2 to save memory."""
     global _mobilenet_model
     if _mobilenet_model is None:
-        from tensorflow.keras.applications import MobileNetV2
         _mobilenet_model = MobileNetV2(
             weights="imagenet",
             include_top=False,
@@ -40,8 +49,6 @@ def _get_mobilenet():
 
 def _extract_generic_embedding(image_path: str) -> np.ndarray:
     """Extract embedding from any image using MobileNetV2 → project to 128-D."""
-    from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-    from tensorflow.keras.preprocessing.image import load_img, img_to_array
 
     model = _get_mobilenet()
 

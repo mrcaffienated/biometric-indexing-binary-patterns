@@ -652,7 +652,7 @@ with tab3:
                 # FBP PATTERN VISUALIZER
                 # ════════════════════════════════════════════════════════
                 st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
-                st.markdown("#### 🧬 Combined Binary Pattern")
+                st.markdown("#### 🧬 Binary Pattern Review")
 
                 MAX_PATTERN_LEN = 30  # max digits to display
 
@@ -665,22 +665,9 @@ with tab3:
                     f"(from {len(provided_probes)} modalities)"
                 )
 
-                col_probe, col_enrolled = st.columns(2)
-
-                with col_probe:
-                    st.markdown("**🔍 Probe Pattern**")
-                    st.code(probe_concat, language=None)
-
-                with col_enrolled:
-                    if enrolled_concat:
-                        st.markdown(f"**📋 Enrolled ({best_person}) Pattern**")
-                        st.code(enrolled_concat, language=None)
-
-                # Show bit-level match visualization
+                # Show colored binary string
                 if probe_concat and enrolled_concat:
                     min_len = min(len(probe_concat), len(enrolled_concat))
-                    match_bits = sum(1 for a, b in zip(probe_concat[:min_len], enrolled_concat[:min_len]) if a == b)
-                    bit_match_pct = round(match_bits / min_len * 100, 1)
 
                     # Build colored diff string
                     diff_html = ""
@@ -692,13 +679,7 @@ with tab3:
 
                     st.markdown(f"""
                     <div class="info-card">
-                        <div style="color:#8892b0;font-size:0.75rem;text-transform:uppercase;letter-spacing:1px">Bit-Level Comparison</div>
-                        <div style="font-family:monospace;font-size:1.1rem;margin-top:0.5rem;letter-spacing:2px">{diff_html}</div>
-                        <div style="color:#8892b0;font-size:0.85rem;margin-top:0.5rem">
-                            {match_bits}/{min_len} bits match ({bit_match_pct}%) · 
-                            <span style="color:#64ffda">■</span> match  
-                            <span style="color:#ef9a9a">■</span> mismatch
-                        </div>
+                        <div style="font-family:monospace;font-size:1.1rem;letter-spacing:2px">{diff_html}</div>
                     </div>
                     """, unsafe_allow_html=True)
 

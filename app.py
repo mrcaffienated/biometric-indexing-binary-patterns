@@ -171,7 +171,7 @@ st.markdown("""
 
 MODALITIES = ["face", "iris", "fingerprint"]
 MODALITY_ICONS = {"face": "👤", "iris": "👁️", "fingerprint": "🖐️"}
-MATCH_THRESHOLD = 0.60
+MATCH_THRESHOLD = 0.65
 FBP_WINDOW_LENGTH = 6
 FBP_TOP_N = 15
 BASE_DATASET = "lfw_subset"
@@ -652,7 +652,7 @@ with tab3:
                 # FBP PATTERN VISUALIZER
                 # ════════════════════════════════════════════════════════
                 st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
-                st.markdown("#### 🧬 Binary Pattern Review")
+                st.markdown("#### 🧬 Binary Template Preview")
 
                 MAX_PATTERN_LEN = 30  # max digits to display
 

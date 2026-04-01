@@ -4,6 +4,9 @@ Centralized feature extraction for multi-modal biometric system.
 - Face: DeepFace FaceNet (128-D)
 - Iris: MobileNetV2 feature extraction (128-D)
 - Fingerprint: MobileNetV2 feature extraction (128-D)
+
+NOTE: TensorFlow/Keras imports are deferred (lazy) so that FBP functions
+remain importable even when TF is unavailable or fails to load.
 """
 
 import numpy as np
@@ -23,22 +26,37 @@ def extract_face_embedding(image_path: str) -> np.ndarray:
 
 # ── Generic CNN Embedding (for Iris & Fingerprint) ──────────────────
 _mobilenet_model = None
+_keras_modules = {}  # cache for lazy-loaded keras functions
 
-# Compatible imports for both TF ≤2.15 (tensorflow.keras) and TF ≥2.16 (standalone keras)
-try:
-    from tensorflow.keras.applications import MobileNetV2
-    from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-    from tensorflow.keras.preprocessing.image import load_img, img_to_array
-except (ImportError, AttributeError):
-    from keras.applications import MobileNetV2
-    from keras.applications.mobilenet_v2 import preprocess_input
-    from keras.utils import load_img, img_to_array
+
+def _load_keras_modules():
+    """Lazy-load Keras modules, compatible with TF ≤2.15 and TF ≥2.16."""
+    global _keras_modules
+    if _keras_modules:
+        return _keras_modules
+    try:
+        from tensorflow.keras.applications import MobileNetV2
+        from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+        from tensorflow.keras.preprocessing.image import load_img, img_to_array
+    except (ImportError, AttributeError):
+        from keras.applications import MobileNetV2
+        from keras.applications.mobilenet_v2 import preprocess_input
+        from keras.utils import load_img, img_to_array
+    _keras_modules = {
+        "MobileNetV2": MobileNetV2,
+        "preprocess_input": preprocess_input,
+        "load_img": load_img,
+        "img_to_array": img_to_array,
+    }
+    return _keras_modules
+
 
 def _get_mobilenet():
     """Lazy-load MobileNetV2 to save memory."""
     global _mobilenet_model
     if _mobilenet_model is None:
-        _mobilenet_model = MobileNetV2(
+        km = _load_keras_modules()
+        _mobilenet_model = km["MobileNetV2"](
             weights="imagenet",
             include_top=False,
             pooling="avg",
@@ -49,13 +67,14 @@ def _get_mobilenet():
 
 def _extract_generic_embedding(image_path: str) -> np.ndarray:
     """Extract embedding from any image using MobileNetV2 → project to 128-D."""
+    km = _load_keras_modules()
 
     model = _get_mobilenet()
 
-    img = load_img(image_path, target_size=(224, 224))
-    img_array = img_to_array(img)
+    img = km["load_img"](image_path, target_size=(224, 224))
+    img_array = km["img_to_array"](img)
     img_array = np.expand_dims(img_array, axis=0)
-    img_array = preprocess_input(img_array)
+    img_array = km["preprocess_input"](img_array)
 
     features = model.predict(img_array, verbose=0).flatten()  # 1280-D
 

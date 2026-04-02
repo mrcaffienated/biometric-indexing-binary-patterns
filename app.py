@@ -15,6 +15,7 @@ from feature_utils import (
     extract_frequent_patterns,
     rank_patterns_across_modalities,
     fbp_similarity,
+    per_trait_fbp_match,
 )
 import json
 
@@ -442,11 +443,14 @@ with tab2:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# TAB 3 — TESTING (FBP Authentication)
+# TAB 3 — TESTING (Strict Multi-Trait FBP Authentication)
 # ═══════════════════════════════════════════════════════════════════
 with tab3:
     st.markdown("### Biometric Authentication")
-    st.markdown("Provide **at least 2 of 3** biometric samples. FBP patterns are extracted and matched against enrolled indexes.")
+    st.markdown(
+        "Provide **at least 2 of 3** biometric samples. "
+        "Each trait is compared **independently** — a match is accepted only when **≥ 2 traits** pass the threshold."
+    )
 
     st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
 
@@ -529,11 +533,12 @@ with tab3:
             if not os.path.exists(combined_dir):
                 st.error("No FBP indexes found. Run **Training** first.")
             else:
-                with st.spinner("Extracting frequent binary patterns from probe..."):
+                with st.spinner("Extracting per-trait frequent binary patterns from probe..."):
 
-                    # ── Build probe FBP patterns ──
+                    # ── Build per-modality probe FBP patterns ──
+                    probe_per_mod_patterns = {}   # mod -> list of pattern strings
                     probe_binary = {}
-                    probe_pattern_lists = []
+
                     for mod in provided_probes:
                         proj_path = f"projection_matrix_{mod}.npy"
                         if not os.path.exists(proj_path):
@@ -545,18 +550,15 @@ with tab3:
                         binary_tmpl = create_binary_template(embedding, R)
                         probe_binary[mod] = binary_tmpl
 
-                        # Extract frequent patterns from probe
+                        # Extract frequent patterns for THIS modality
                         patterns = extract_frequent_patterns(binary_tmpl, FBP_WINDOW_LENGTH)
-                        probe_pattern_lists.append(patterns)
+                        probe_per_mod_patterns[mod] = patterns[:FBP_TOP_N]
 
-                    # Rank probe patterns across modalities
-                    probe_ranked = rank_patterns_across_modalities(probe_pattern_lists)
-                    probe_top = probe_ranked[:FBP_TOP_N]
-
-                    # ── Compare against enrolled FBP indexes ──
-                    best_score = -1.0
+                    # ── Per-trait comparison against all enrolled persons ──
+                    best_match_count = -1
+                    best_avg_score = -1.0
                     best_person = "Unknown"
-                    best_enrolled_patterns = []
+                    best_result = None
                     compared_count = 0
 
                     for person in os.listdir(combined_dir):
@@ -573,118 +575,188 @@ with tab3:
 
                         enrolled_mods = fbp_data["modalities"]
 
-                        # Check that probe modalities are covered
+                        # Check that probe modalities are covered by enrolled data
                         if not all(m in enrolled_mods for m in provided_probes):
                             continue
 
-                        enrolled_patterns = fbp_data["ranked_patterns"]
-                        score = fbp_similarity(probe_top, enrolled_patterns, FBP_TOP_N)
+                        enrolled_per_mod = fbp_data.get("per_modality_patterns", {})
+                        if not enrolled_per_mod:
+                            continue
+
+                        # ── Per-trait matching with strict >= 2 rule ──
+                        result = per_trait_fbp_match(
+                            probe_per_mod_patterns,
+                            enrolled_per_mod,
+                            threshold=MATCH_THRESHOLD,
+                            top_n=FBP_TOP_N,
+                        )
                         compared_count += 1
 
-                        if score > best_score:
-                            best_score = score
+                        # Pick best person: most matched traits first, then highest avg score
+                        avg_score = (
+                            sum(result["trait_scores"].values()) / max(len(result["trait_scores"]), 1)
+                        )
+                        if (
+                            result["matched_count"] > best_match_count
+                            or (
+                                result["matched_count"] == best_match_count
+                                and avg_score > best_avg_score
+                            )
+                        ):
+                            best_match_count = result["matched_count"]
+                            best_avg_score = avg_score
                             best_person = person
-                            best_enrolled_patterns = enrolled_patterns
+                            best_result = result
 
-                matched = best_score > MATCH_THRESHOLD
+                # ══════════════════════════════════════════════════
+                # DISPLAY RESULTS
+                # ══════════════════════════════════════════════════
+                st.markdown("#### 🔐 Multi-Trait Authentication Result")
 
-                # ── Display Result ──
-                st.markdown("#### FBP Authentication Result")
+                if compared_count == 0 or best_result is None:
+                    st.markdown("""
+                    <div class="result-fail">
+                        <h2>⚠️ NO MATCH POSSIBLE</h2>
+                        <p>No enrolled person has a matching modality combination. Re-train first.</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    accepted = best_result["decision"] in ("Valid Match", "Strong Match")
 
-                col_score, col_decision = st.columns([1, 2])
+                    # ── Per-Trait Score Cards ──
+                    st.markdown("##### Per-Trait Similarity Scores")
+                    trait_cols = st.columns(len(best_result["trait_scores"]))
+                    for idx, (trait, score) in enumerate(best_result["trait_scores"].items()):
+                        with trait_cols[idx]:
+                            score_pct = round(score * 100, 1)
+                            is_pass = best_result["trait_matched"][trait]
+                            color = "#64ffda" if is_pass else "#ef9a9a"
+                            icon = MODALITY_ICONS.get(trait, "🔬")
+                            status_badge = (
+                                '<span class="badge-ok">✓ PASS</span>'
+                                if is_pass
+                                else '<span class="badge-missing">✗ FAIL</span>'
+                            )
+                            st.markdown(f"""
+                            <div class="score-box">
+                                <div style="font-size:1.5rem">{icon}</div>
+                                <div class="score-label">{trait.upper()}</div>
+                                <div class="score-value" style="color:{color}">{score_pct}%</div>
+                                <div style="margin-top:0.3rem">{status_badge}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
 
-                with col_score:
-                    score_pct = round(best_score * 100, 1) if best_score >= 0 else 0
-                    color = "#64ffda" if matched else "#ef9a9a"
-                    mod_label = " + ".join(
-                        f"{MODALITY_ICONS[m]} {m.title()}" for m in provided_probes
-                    )
+                    # ── Matched Count Summary ──
+                    matched_count = best_result["matched_count"]
+                    total_compared_traits = best_result["total_compared"]
+                    count_color = "#64ffda" if accepted else "#ef9a9a"
                     st.markdown(f"""
-                    <div class="score-box">
-                        <div class="score-label">FBP Similarity</div>
-                        <div class="score-value" style="color:{color}">{score_pct}%</div>
+                    <div class="info-card" style="text-align:center">
+                        <div style="color:#8892b0;font-size:0.75rem;text-transform:uppercase;letter-spacing:1px">
+                            Traits Matched
+                        </div>
+                        <div style="font-size:2rem;font-weight:700;color:{count_color}">
+                            {matched_count} / {total_compared_traits}
+                        </div>
                         <div style="color:#8892b0;font-size:0.85rem">
-                            {mod_label}
+                            Threshold per trait: {int(MATCH_THRESHOLD * 100)}% &nbsp;|&nbsp;
+                            Minimum required: 2 traits
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
 
-                with col_decision:
-                    if compared_count == 0:
-                        st.markdown("""
-                        <div class="result-fail">
-                            <h2>⚠️ NO MATCH POSSIBLE</h2>
-                            <p>No enrolled person has a matching modality combination. Re-train first.</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    elif matched:
+                    # ── Final Decision Banner ──
+                    if accepted:
+                        decision_label = best_result["decision"]
+                        decision_emoji = "✅" if decision_label == "Valid Match" else "🟢"
                         st.markdown(f"""
                         <div class="result-pass">
-                            <h2>✅ AUTHENTICATED</h2>
-                            <p>Identity: <strong>{best_person}</strong> — FBP similarity: {score_pct}%</p>
+                            <h2>{decision_emoji} AUTHENTICATED — {decision_label.upper()}</h2>
+                            <p>Identity: <strong>{best_person}</strong> — {matched_count} of {total_compared_traits} traits matched</p>
+                            <p style="font-size:0.85rem">{best_result["reason"]}</p>
                         </div>
                         """, unsafe_allow_html=True)
                     else:
                         st.markdown(f"""
                         <div class="result-fail">
                             <h2>❌ REJECTED</h2>
-                            <p>Best match: {best_person} ({score_pct}%) — below {int(MATCH_THRESHOLD*100)}% threshold</p>
+                            <p>Best candidate: <strong>{best_person}</strong> — only {matched_count} of {total_compared_traits} traits matched</p>
+                            <p style="font-size:0.85rem">{best_result["reason"]}</p>
                         </div>
                         """, unsafe_allow_html=True)
 
-                # ── Technical Details ──
-                matching_patterns = set(probe_top).intersection(set(best_enrolled_patterns)) if best_enrolled_patterns else set()
-                st.markdown(f"""
-                <div class="info-card">
-                    <div style="color:#8892b0;font-size:0.75rem;text-transform:uppercase;letter-spacing:1px">Technical Details</div>
-                    <div style="color:#e0e0e0;font-size:0.85rem;margin-top:0.5rem">
-                        Method: Frequent Binary Pattern (FBP) Indexing<br>
-                        Window length: {FBP_WINDOW_LENGTH} bits (2<sup>{FBP_WINDOW_LENGTH}</sup> = {2**FBP_WINDOW_LENGTH} possible patterns)<br>
-                        Probe patterns: {len(probe_top)} | Enrolled patterns: {len(best_enrolled_patterns)}<br>
-                        Matching patterns: {len(matching_patterns)} / {FBP_TOP_N}<br>
-                        Persons compared: {compared_count}<br>
-                        Threshold: {int(MATCH_THRESHOLD*100)}%
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-                # ════════════════════════════════════════════════════════
-                # FBP PATTERN VISUALIZER
-                # ════════════════════════════════════════════════════════
-                st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
-                st.markdown("#### 🧬 Binary Template Preview")
-
-                MAX_PATTERN_LEN = 30  # max digits to display
-
-                # Concatenate top patterns into a single binary string
-                probe_concat = "".join(probe_top)[:MAX_PATTERN_LEN]
-                enrolled_concat = "".join(best_enrolled_patterns)[:MAX_PATTERN_LEN] if best_enrolled_patterns else ""
-
-                st.caption(
-                    f"Top frequent patterns concatenated into a {len(probe_concat)}-bit binary index "
-                    f"(from {len(provided_probes)} modalities)"
-                )
-
-                # Show colored binary string
-                if probe_concat and enrolled_concat:
-                    min_len = min(len(probe_concat), len(enrolled_concat))
-
-                    # Build colored diff string
-                    diff_html = ""
-                    for i in range(min_len):
-                        if probe_concat[i] == enrolled_concat[i]:
-                            diff_html += f'<span style="color:#64ffda">{probe_concat[i]}</span>'
-                        else:
-                            diff_html += f'<span style="color:#ef9a9a">{probe_concat[i]}</span>'
-
+                    # ── Technical Details ──
                     st.markdown(f"""
                     <div class="info-card">
-                        <div style="font-family:monospace;font-size:1.1rem;letter-spacing:2px">{diff_html}</div>
+                        <div style="color:#8892b0;font-size:0.75rem;text-transform:uppercase;letter-spacing:1px">
+                            Technical Details
+                        </div>
+                        <div style="color:#e0e0e0;font-size:0.85rem;margin-top:0.5rem">
+                            Method: Per-Trait Frequent Binary Pattern (FBP) Matching<br>
+                            Strict Rule: Match accepted ONLY if ≥ 2 traits independently pass threshold<br>
+                            Window length: {FBP_WINDOW_LENGTH} bits (2<sup>{FBP_WINDOW_LENGTH}</sup> = {2**FBP_WINDOW_LENGTH} possible patterns)<br>
+                            Top patterns per trait: {FBP_TOP_N}<br>
+                            Per-trait threshold: {int(MATCH_THRESHOLD * 100)}%<br>
+                            Persons compared: {compared_count}<br>
+                            Decision: <strong>{best_result["decision"]}</strong>
+                        </div>
                     </div>
                     """, unsafe_allow_html=True)
 
-                if matching_patterns:
-                    st.success(f"✅ {len(matching_patterns)}/{FBP_TOP_N} frequent patterns overlap between probe and enrolled index.")
-                else:
-                    st.warning("⚠️ No common patterns found between probe and enrolled data.")
+                    # ── Decision Matrix Reference ──
+                    st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
+                    st.markdown("##### 📋 Decision Matrix")
+                    st.markdown("""
+                    | Traits Matched | Decision |
+                    |:-:|:-:|
+                    | **0** | ❌ Rejected |
+                    | **1** | ❌ Rejected — Single trait not accepted |
+                    | **2** | ✅ Valid Match |
+                    | **3** | ✅ Strong Match |
+
+                    > ⚠️ **This system strictly rejects matches based on a single trait under any circumstance.**
+                    """)
+
+                    # ════════════════════════════════════════════════
+                    # PER-TRAIT BINARY TEMPLATE PREVIEW
+                    # ════════════════════════════════════════════════
+                    st.markdown("<hr class='clean-divider'>", unsafe_allow_html=True)
+                    st.markdown("#### 🧬 Per-Trait Binary Template Preview")
+
+                    MAX_PATTERN_LEN = 30
+
+                    for mod in provided_probes:
+                        probe_pats = probe_per_mod_patterns.get(mod, [])
+                        enrolled_pats = best_result["trait_scores"].get(mod) is not None
+
+                        if not probe_pats:
+                            continue
+
+                        probe_concat = "".join(probe_pats)[:MAX_PATTERN_LEN]
+
+                        icon = MODALITY_ICONS.get(mod, "🔬")
+                        is_pass = best_result["trait_matched"].get(mod, False)
+                        score_pct = round(best_result["trait_scores"].get(mod, 0) * 100, 1)
+                        badge = (
+                            f'<span class="badge-ok">✓ {score_pct}%</span>'
+                            if is_pass
+                            else f'<span class="badge-missing">✗ {score_pct}%</span>'
+                        )
+
+                        # Build colored bits
+                        bits_html = ""
+                        for ch in probe_concat:
+                            color = "#64ffda" if ch == "1" else "rgba(255,255,255,0.2)"
+                            bits_html += f'<span style="color:{color}">{ch}</span>'
+
+                        st.markdown(f"""
+                        <div class="info-card">
+                            <div style="margin-bottom:0.3rem">
+                                <strong>{icon} {mod.title()}</strong> &nbsp; {badge}
+                            </div>
+                            <div style="font-family:monospace;font-size:1rem;letter-spacing:2px">
+                                {bits_html}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
 

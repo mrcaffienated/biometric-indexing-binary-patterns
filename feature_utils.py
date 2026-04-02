@@ -218,3 +218,66 @@ def fbp_similarity(probe_patterns: list, enrolled_patterns: list, top_n: int = 1
 
     return overlap / union
 
+
+def per_trait_fbp_match(probe_per_mod: dict, enrolled_per_mod: dict,
+                        threshold: float = 0.65, top_n: int = 15) -> dict:
+    """
+    Compare each biometric trait independently and require >= 2 matching traits.
+
+    Args:
+        probe_per_mod:    dict mapping modality name -> list of FBP pattern strings
+        enrolled_per_mod: dict mapping modality name -> list of FBP pattern strings
+        threshold:        similarity threshold for a single trait to count as matched
+        top_n:            number of top patterns to consider per trait
+
+    Returns:
+        {
+            "trait_scores":   {"face": 0.72, "iris": 0.68, ...},
+            "trait_matched":  {"face": True,  "iris": True,  ...},
+            "matched_count":  2,
+            "total_compared": 3,
+            "decision":       "Valid Match" | "Strong Match" | "Rejected",
+            "reason":         human-readable explanation
+        }
+    """
+    trait_scores = {}
+    trait_matched = {}
+
+    # Find traits present in BOTH probe and enrolled
+    shared_traits = sorted(set(probe_per_mod.keys()) & set(enrolled_per_mod.keys()))
+
+    for trait in shared_traits:
+        score = fbp_similarity(
+            probe_per_mod[trait][:top_n],
+            enrolled_per_mod[trait][:top_n],
+            top_n,
+        )
+        trait_scores[trait] = round(score, 4)
+        trait_matched[trait] = score >= threshold
+
+    matched_count = sum(1 for v in trait_matched.values() if v)
+    total_compared = len(shared_traits)
+
+    # ── Strict decision rule ──
+    if matched_count >= 3:
+        decision = "Strong Match"
+        reason = f"All {matched_count} traits matched — strong biometric corroboration."
+    elif matched_count == 2:
+        decision = "Valid Match"
+        reason = f"2 traits matched — minimum multi-trait requirement satisfied."
+    elif matched_count == 1:
+        decision = "Rejected"
+        reason = "Only 1 trait matched — single-trait matches are NOT accepted."
+    else:
+        decision = "Rejected"
+        reason = "No traits matched the similarity threshold."
+
+    return {
+        "trait_scores": trait_scores,
+        "trait_matched": trait_matched,
+        "matched_count": matched_count,
+        "total_compared": total_compared,
+        "decision": decision,
+        "reason": reason,
+    }
+

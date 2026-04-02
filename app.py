@@ -1,5 +1,10 @@
 import os
 os.environ["TF_USE_LEGACY_KERAS"] = "1"
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count() or 4))
+os.environ.setdefault("TF_NUM_INTEROP_THREADS", str(os.cpu_count() or 4))
+os.environ.setdefault("TF_NUM_INTRAOP_THREADS", str(os.cpu_count() or 4))
 
 import streamlit as st
 import numpy as np
@@ -334,13 +339,23 @@ with tab2:
             if len(persons) == 0:
                 st.error("No enrolled persons found.")
             else:
-                progress = st.progress(0, text="Initializing...")
+                progress = st.progress(0, text="Loading AI models (first run may take a moment)...")
 
                 extractors = {
                     "face": extract_face_embedding,
                     "iris": extract_iris_embedding,
                     "fingerprint": extract_fingerprint_embedding,
                 }
+
+                # ── Pre-load models so subsequent calls are fast ──
+                # This is the slow part (TF model init); show it clearly
+                try:
+                    from feature_utils import _get_mobilenet, _load_keras_modules
+                    _load_keras_modules()
+                    _get_mobilenet()
+                except Exception:
+                    pass  # models will load lazily on first use
+                progress.progress(0.05, text="Models loaded. Processing enrollments...")
 
                 combined_dir = os.path.join(FEATURES_DIR, "combined_templates")
                 os.makedirs(combined_dir, exist_ok=True)

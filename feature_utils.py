@@ -11,6 +11,14 @@ remain importable even when TF is unavailable or fails to load.
 
 import numpy as np
 import os
+from collections import Counter
+
+# ── TensorFlow CPU performance optimizations (helps Windows machines) ──
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")          # suppress TF info/warnings
+os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")         # avoid oneDNN variability
+os.environ.setdefault("OMP_NUM_THREADS", str(os.cpu_count() or 4))
+os.environ.setdefault("TF_NUM_INTEROP_THREADS", str(os.cpu_count() or 4))
+os.environ.setdefault("TF_NUM_INTRAOP_THREADS", str(os.cpu_count() or 4))
 
 # ── Face Embedding ──────────────────────────────────────────────────
 def extract_face_embedding(image_path: str) -> np.ndarray:
@@ -65,6 +73,19 @@ def _get_mobilenet():
     return _mobilenet_model
 
 
+# Cache for the 1280→128 random projection (avoids regenerating on every call)
+_projection_128 = None
+
+
+def _get_projection_128(input_dim: int = 1280) -> np.ndarray:
+    """Return a cached random projection matrix (input_dim → 128)."""
+    global _projection_128
+    if _projection_128 is None or _projection_128.shape[0] != input_dim:
+        rng = np.random.RandomState(99)          # deterministic, isolated RNG
+        _projection_128 = rng.randn(input_dim, 128)
+    return _projection_128
+
+
 def _extract_generic_embedding(image_path: str) -> np.ndarray:
     """Extract embedding from any image using MobileNetV2 → project to 128-D."""
     km = _load_keras_modules()
@@ -78,9 +99,8 @@ def _extract_generic_embedding(image_path: str) -> np.ndarray:
 
     features = model.predict(img_array, verbose=0).flatten()  # 1280-D
 
-    # Project down to 128-D using a fixed random projection
-    np.random.seed(99)
-    proj = np.random.randn(len(features), 128)
+    # Project down to 128-D using a CACHED random projection
+    proj = _get_projection_128(len(features))
     embedding_128 = features @ proj
     # L2 normalize
     norm = np.linalg.norm(embedding_128)
@@ -129,38 +149,33 @@ def extract_frequent_patterns(binary_template: np.ndarray, window_length: int = 
     Extract frequent binary sub-patterns from a binary template using a sliding window.
     Returns a list of pattern strings ranked by frequency (most frequent first).
     Only patterns occurring more than once are included.
+
+    Optimized: uses integer packing + Counter instead of string conversions.
     """
-    from itertools import product as iter_product
+    template = binary_template.astype(np.uint8)
+    n = len(template)
+    if n < window_length:
+        return []
 
-    # Generate all possible K-length binary combinations
-    K_combinations = {}
-    for c in enumerate(iter_product(range(2), repeat=window_length)):
-        K_combinations[str(c[1])] = 0
+    # Pack each window into a single integer for fast hashing / counting
+    # e.g. [0,1,1,0,1,0] → 0b011010 = 26
+    powers = 1 << np.arange(window_length - 1, -1, -1, dtype=np.uint32)
 
-    # Slide window across binary template and count pattern occurrences
-    i = 0
-    while i < (len(binary_template) - window_length) or (len(binary_template) - i >= window_length):
-        candidate = binary_template[i:i + window_length]
-        candidate_str = str(tuple(map(int, candidate)))
-        if candidate_str in K_combinations:
-            K_combinations[candidate_str] += 1
-        i += 1
+    counts = Counter()
+    for i in range(n - window_length + 1):
+        key = int(template[i:i + window_length] @ powers)
+        counts[key] += 1
 
-    # Sort by frequency (descending)
-    sorted_patterns = dict(sorted(K_combinations.items(), key=lambda x: x[1], reverse=True))
+    # Keep only patterns with frequency > 1, sorted descending
+    frequent = sorted(
+        ((pat, freq) for pat, freq in counts.items() if freq > 1),
+        key=lambda x: x[1],
+        reverse=True,
+    )
 
-    # Keep only patterns with frequency > 1
-    frequent = [k for k, v in sorted_patterns.items() if v > 1]
-
-    # Clean pattern strings: "(0, 1, 1, 0, 1, 0)" -> "011010"
-    cleaned = []
-    for code in frequent:
-        code = code.strip('()')
-        parts = code.split(',')
-        pattern = ''.join(p.strip() for p in parts)
-        cleaned.append(pattern)
-
-    return cleaned
+    # Convert integer back to binary string of fixed width
+    fmt = f"{{:0{window_length}b}}"
+    return [fmt.format(pat) for pat, _ in frequent]
 
 
 def rank_patterns_across_modalities(pattern_lists: list) -> list:
